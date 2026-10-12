@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from homeassistant.components.camera import CameraEntityFeature
 import pytest
+from homeassistant.components.camera import CameraEntityFeature
 
 from custom_components.unifi_insights.camera import (
     PARALLEL_UPDATES,

@@ -25,6 +25,7 @@ from custom_components.unifi_insights import (
     _first_site_id,
     _is_console_device,
     async_migrate_entry,
+    async_setup_entry,
 )
 from custom_components.unifi_insights.api import UniFiResponseError
 from custom_components.unifi_insights.const import (
@@ -39,6 +40,10 @@ from custom_components.unifi_insights.const import (
     CONNECTION_TYPE_REMOTE,
     DOMAIN,
 )
+from custom_components.unifi_insights.coordinators.protect import (
+    UnifiProtectCoordinator,
+)
+from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -1141,7 +1146,7 @@ class TestConsoleDeviceDetection:
 async def test_migration_version_guard_and_unique_id_collision(
     hass: HomeAssistant,
 ) -> None:
-    """Migration aborts on higher major version and avoids duplicate unique_id collision."""
+    """Abort newer-schema migration and avoid duplicate unique_id collisions."""
     # Higher major version returns False
     entry_future = MockConfigEntry(
         domain=DOMAIN,
@@ -1182,9 +1187,7 @@ async def test_async_setup_entry_discovers_console_identity_from_nvr(
     hass: HomeAssistant,
     enable_custom_integrations,
 ) -> None:
-    """async_setup_entry updates local entry with console MAC, name and title from NVR."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
+    """Update the local entry with the NVR's console MAC, name, and title."""
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -1262,9 +1265,7 @@ async def test_async_setup_entry_discovers_console_identity_from_device_gateway(
     hass: HomeAssistant,
     enable_custom_integrations,
 ) -> None:
-    """async_setup_entry updates local entry with console MAC and name from Gateway device."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
+    """Update the local entry with the gateway's console MAC and name."""
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -1334,12 +1335,7 @@ async def test_console_identity_extra_coverage_branches(
     hass: HomeAssistant,
     enable_custom_integrations,
 ) -> None:
-    """Cover edge cases in _first_site_id, device parsing, setup fallbacks and protect coordinator."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
-    from custom_components.unifi_insights.coordinators.protect import (
-        UnifiProtectCoordinator,
-    )
+    """Cover site lookup, device parsing, setup fallback, and Protect edge cases."""
 
     # 1. _first_site_id when sites is not a dict
     coord = MagicMock()
@@ -1433,10 +1429,8 @@ async def test_console_identity_extra_coverage_branches(
 async def test_config_flow_local_probe_protect_nvr_and_reconfigure_mismatch(
     hass: HomeAssistant,
 ) -> None:
-    """Test local config flow extracts NVR info and remote reconfigure aborts on console mismatch."""
+    """Test NVR discovery and reject reconfiguration to a different console."""
     # 1. Local flow with Protect probe returning NVR
-    from custom_components.unifi_insights.api import UniFiResponseError
-
     net_cm, net_client = _make_mock_client()
     net_client.sites.get_all = AsyncMock(
         side_effect=UniFiResponseError("Not Found", status_code=404)
@@ -1537,10 +1531,6 @@ async def test_console_identity_final_branch_coverage(
     hass: HomeAssistant,
 ) -> None:
     """Cover remaining edge cases in config flow and protect coordinator."""
-    from custom_components.unifi_insights.coordinators.protect import (
-        UnifiProtectCoordinator,
-    )
-
     # 1. Protect coordinator _start_sensor_reconcile_timer when timer already active
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
@@ -1583,8 +1573,6 @@ async def test_console_identity_final_branch_coverage(
         assert result["result"].unique_id == "custom_site_beta"
 
     # 3. Local flow probe protect NVR inspect exception handling
-    from custom_components.unifi_insights.api import UniFiResponseError
-
     net_cm_err, net_client_err = _make_mock_client()
     net_client_err.sites.get_all = AsyncMock(
         side_effect=UniFiResponseError("Not Found", status_code=404)
@@ -1692,9 +1680,6 @@ async def test_async_setup_entry_handles_malformed_coordinator_data(
     a non-empty ``nvrs`` dict whose first value isn't itself a dict, and a
     ``devices`` value that isn't a dict at all.
     """
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
-
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="UniFi Insights (Local)",
@@ -1770,9 +1755,6 @@ async def test_async_setup_entry_keeps_preset_console_name_from_nvr(
     enable_custom_integrations,
 ) -> None:
     """An already-known console name is not clobbered by the NVR's name."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
-
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="UniFi - Preset Name",
@@ -1848,9 +1830,6 @@ async def test_async_setup_entry_keeps_preset_console_name_from_device(
     enable_custom_integrations,
 ) -> None:
     """An already-known console name is not clobbered by a discovered gateway's name."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
-
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="UniFi - Preset Device Name",
@@ -1919,9 +1898,6 @@ async def test_async_setup_entry_backfills_credential_identity_when_no_mac_found
     enable_custom_integrations,
 ) -> None:
     """Backfill a legacy credential identity with the host when no MAC is found."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
-
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id="local_api_key_unstable",
@@ -1978,7 +1954,7 @@ async def test_async_setup_entry_backfills_credential_identity_when_no_mac_found
 async def test_migration_skips_v1_block_below_version_one(
     hass: HomeAssistant,
 ) -> None:
-    """A config entry below version 1 (defensive) is left untouched but still succeeds."""
+    """Leave a config entry below version 1 untouched and report success."""
     entry_v0 = MockConfigEntry(
         domain=DOMAIN,
         version=0,
@@ -2062,8 +2038,6 @@ async def test_local_flow_protect_probe_without_nvr_attribute(
     hass: HomeAssistant,
 ) -> None:
     """Protect clients that expose no nvr sub-client skip NVR inspection cleanly."""
-    from custom_components.unifi_insights.api import UniFiResponseError
-
     net_cm_err, net_client_err = _make_mock_client()
     net_client_err.sites.get_all = AsyncMock(
         side_effect=UniFiResponseError("Not Found", status_code=404)
@@ -2122,8 +2096,7 @@ async def test_local_flow_protect_probe_without_nvr_attribute(
 async def test_local_flow_protect_probe_nvr_returns_none(
     hass: HomeAssistant,
 ) -> None:
-    """An available Protect API with cameras but no NVR record keeps the host-based id."""
-    from custom_components.unifi_insights.api import UniFiResponseError
+    """Keep the host-based id when an available Protect API has no NVR record."""
 
     net_cm_err, net_client_err = _make_mock_client()
     net_client_err.sites.get_all = AsyncMock(
@@ -2181,8 +2154,6 @@ async def test_local_reconfigure_with_blank_host_preserves_console_id(
     never populated `console_info["id"]` with anything usable, so there is
     nothing better to store than what the entry already had.
     """
-    from custom_components.unifi_insights.api import UniFiResponseError
-
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id="existing_console_id_777",

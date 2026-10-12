@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta  # noqa: TC003
 from http import HTTPStatus
-import logging
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -13,8 +13,6 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from custom_components.unifi_insights.const import DOMAIN
-
 from custom_components.unifi_insights.api import (
     UniFiAuthenticationError,
     UniFiConnectionError,
@@ -22,6 +20,7 @@ from custom_components.unifi_insights.api import (
     UniFiResponseError,
     UniFiTimeoutError,
 )
+from custom_components.unifi_insights.const import DOMAIN
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry

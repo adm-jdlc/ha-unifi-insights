@@ -646,6 +646,7 @@ class UnifiFacadeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         site_id: str,
         device_id: str,
         outlet_index: int,
+        *,
         state: bool,
         cycle_enabled: bool | None = None,
     ) -> bool:
@@ -660,7 +661,7 @@ class UnifiFacadeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             site_name,
             target_id,
             outlet_index,
-            state,
+            state=state,
             cycle_enabled=cycle_enabled,
             current_device=device_data,
         )

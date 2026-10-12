@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from custom_components.unifi_insights.api import UniFiAuthenticationError
 from custom_components.unifi_insights.topology_contract import normalize_mac
 
-from .internet_activity import resolve_report_site_name as resolve_report_site_name
+from .internet_activity import resolve_report_site_name
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -17,6 +17,23 @@ if TYPE_CHECKING:
     from custom_components.unifi_insights.api.network import UniFiNetworkClient
 
 _LOGGER = logging.getLogger(__name__)
+
+__all__ = [
+    "async_fetch_site_firewall",
+    "async_fetch_site_routes",
+    "async_fetch_site_rule_section",
+    "async_fetch_site_vouchers",
+    "async_fetch_site_vpn_clients",
+    "async_fetch_site_vpns",
+    "async_fetch_site_wifi_and_links",
+    "client_links",
+    "enrich_wifi",
+    "map_legacy_site_names",
+    "resolve_report_site_name",
+    "rule_display_name",
+    "verified_legacy_site_name",
+    "wifi_qr_payload",
+]
 
 
 def map_legacy_site_names(

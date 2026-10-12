@@ -60,7 +60,7 @@ class TestEnrichWifi:
 
         wifi = wifi_dict["w1"]
         assert wifi["num_connected_clients"] == 2
-        assert wifi["passphrase"] == "secret"
+        assert wifi["passphrase"] == legacy[0]["x_passphrase"]
         assert wifi["qr_code"] == "WIFI:T:WPA;S:Home;P:secret;;"
 
     def test_enrich_without_matching_config(self) -> None:

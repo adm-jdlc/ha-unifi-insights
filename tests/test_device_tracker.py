@@ -20,7 +20,8 @@ from custom_components.unifi_insights.device_tracker import (
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
-    from homeassistant.helpers import device_registry as dr, entity_registry as er
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
 
 
 class TestParallelUpdates:

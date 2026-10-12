@@ -3043,9 +3043,7 @@ async def test_cameras_get_all_reports_complete_once_items_parse_again() -> None
     assert client.cameras.last_result_complete is True
 
 
-async def test_protect_device_endpoint_get_all_reports_incomplete_when_item_skipped() -> (
-    None
-):
+async def test_protect_device_get_all_reports_skipped_items() -> None:
     """The shared Protect endpoint base should flag incomplete results too."""
     client = _protect_client()
     client._get = AsyncMock(
@@ -3063,9 +3061,7 @@ async def test_protect_device_endpoint_get_all_reports_incomplete_when_item_skip
     assert client.alarm_hubs.last_result_complete is False
 
 
-async def test_cameras_get_all_reports_complete_for_response_with_nothing_to_parse() -> (
-    None
-):
+async def test_cameras_get_all_reports_complete_for_empty_response() -> None:
     """Camera get_all should not let an empty response inherit a stale verdict.
 
     The flag distinguishes "no cameras there" from "every camera failed to
