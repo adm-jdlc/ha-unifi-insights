@@ -1801,3 +1801,276 @@ async def test_local_reconfigure_clears_credential_based_current_identity(
         assert dict(entry.data) == previous_data
         assert entry.unique_id == previous_unique_id
     assert attr.asdict(entity_registry.async_get(row.entity_id)) == before
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "success",
+        "account_conflict",
+        "target_conflict",
+        "registry_failure",
+        "entry_failure",
+    ],
+)
+async def test_local_reconfigure_promotes_host_namespace_with_native_preservation(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    device_registry,
+    area_registry,
+    outcome: str,
+) -> None:
+    """Promote a stored HTTPS identity while preserving native rows and compensation."""
+    namespace = "https://console.example"
+    discovered = "aa:bb:cc:dd:ee:ff"
+    entry = _entry(hass, namespace)
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+            CONF_HOST: namespace,
+            CONF_VERIFY_SSL: False,
+        },
+    )
+    before_data = dict(entry.data)
+    area = area_registry.async_create("Synthetic area")
+    device = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "physical_device")}
+    )
+    rows = []
+    for key in ("site_total_clients", "site_wired_clients"):
+        row = _row(
+            entity_registry,
+            entry,
+            "sensor",
+            build_site_unique_id(namespace, "site_shared", key),
+            key,
+            device_id=device.id,
+        )
+        rows.append(
+            entity_registry.async_update_entity(
+                row.entity_id,
+                name=f"Custom {key}",
+                area_id=area.id,
+                icon="mdi:account",
+                disabled_by=er.RegistryEntryDisabler.USER,
+                hidden_by=er.RegistryEntryHider.USER,
+            )
+        )
+    before_rows = [attr.asdict(row) for row in rows]
+    other_namespace = discovered if outcome == "account_conflict" else "console_b"
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CONSOLE_ID: other_namespace, CONF_API_KEY: "other_credential"},
+        entry_id="entry_b",
+        unique_id=other_namespace,
+        disabled_by=config_entries.ConfigEntryDisabler.USER,
+    )
+    other.add_to_hass(hass)
+    foreign = _row(
+        entity_registry,
+        other,
+        "sensor",
+        build_site_unique_id(
+            discovered if outcome == "target_conflict" else "console_b",
+            "site_shared",
+            "site_wired_clients",
+        ),
+        "site_wired_clients",
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    before_foreign = attr.asdict(foreign)
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+    client.sites.get_all = AsyncMock(
+        return_value=[SimpleNamespace(id="site_shared", name="Shared site")]
+    )
+    client.devices.get_all = AsyncMock(
+        return_value=[SimpleNamespace(mac=discovered, is_gateway=True)]
+    )
+    native_registry_update = entity_registry.async_update_entity
+    native_entry_update = hass.config_entries.async_update_entry
+    registry_updates = 0
+    entry_updates = 0
+
+    def update_registry(*args: Any, **kwargs: Any) -> er.RegistryEntry:
+        """Raise after the second real registry mutation to exercise restoration."""
+        nonlocal registry_updates
+        registry_updates += 1
+        result = native_registry_update(*args, **kwargs)
+        if outcome == "registry_failure" and registry_updates == 2:
+            err_msg = "Synthetic registry mutation failure"
+            raise RuntimeError(err_msg)
+        return result
+
+    def update_entry(entry: ConfigEntry, **kwargs: Any) -> bool:
+        """Raise after a real config-entry mutation to compensate both state owners."""
+        nonlocal entry_updates
+        entry_updates += 1
+        result = native_entry_update(entry, **kwargs)
+        if outcome == "entry_failure" and entry_updates == 1:
+            err_msg = "Synthetic config-entry mutation failure"
+            raise RuntimeError(err_msg)
+        return result
+
+    with (
+        patch(
+            "custom_components.unifi_insights.config_flow.UniFiNetworkClient",
+            return_value=client,
+        ),
+        patch.object(
+            entity_registry, "async_update_entity", side_effect=update_registry
+        ),
+        patch.object(
+            hass.config_entries, "async_update_entry", side_effect=update_entry
+        ),
+        patch(
+            "custom_components.unifi_insights.async_setup_entry", return_value=True
+        ) as setup,
+        patch("custom_components.unifi_insights.async_unload_entry", return_value=True),
+        patch(
+            "custom_components.unifi_insights.async_migrate_entry", return_value=True
+        ),
+    ):
+        flow = await entry.start_reconfigure_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"],
+            user_input={
+                CONF_HOST: "https://new-console.example",
+                CONF_API_KEY: "pending_credential",
+                CONF_VERIFY_SSL: True,
+            },
+        )
+        await hass.async_block_till_done()
+        if entry.state is config_entries.ConfigEntryState.LOADED:
+            assert await hass.config_entries.async_unload(entry.entry_id)
+    client.sites.get_all.assert_awaited_once_with(expected_unsupported=True)
+    client.devices.get_all.assert_awaited_once_with(site_id="site_shared")
+    assert attr.asdict(entity_registry.async_get(foreign.entity_id)) == before_foreign
+    for row, before in zip(rows, before_rows, strict=True):
+        current = attr.asdict(entity_registry.async_get(row.entity_id))
+        expected = {
+            **before,
+            "unique_id": (
+                build_site_unique_id(discovered, "site_shared", row.translation_key)
+                if outcome == "success"
+                else row.unique_id
+            ),
+        }
+        assert {
+            key: value
+            for key, value in current.items()
+            if key not in {"previous_unique_id", "modified_at"}
+        } == {
+            key: value
+            for key, value in expected.items()
+            if key not in {"previous_unique_id", "modified_at"}
+        }
+    if outcome == "success":
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "reconfigure_successful"
+        assert entry.data[CONF_CONSOLE_ID] == entry.unique_id == discovered
+        assert entry.data[CONF_API_KEY] == "pending_credential"
+        assert setup.call_count == 1
+        assert registry_updates == 2
+    else:
+        assert dict(entry.data) == before_data
+        assert entry.unique_id == namespace
+        setup.assert_not_called()
+        if outcome == "account_conflict":
+            assert result["type"] == FlowResultType.ABORT
+            assert result["reason"] == "already_configured"
+        else:
+            assert result["type"] == FlowResultType.FORM
+            assert result["errors"]["base"] == (
+                "site_entity_identity_conflict"
+                if outcome == "target_conflict"
+                else "unknown"
+            )
+        assert registry_updates == (
+            0 if outcome in {"account_conflict", "target_conflict"} else 4
+        )
+
+
+@pytest.mark.parametrize(
+    ("stored", "mismatch"),
+    [
+        ("aa:bb:cc:dd:ee:ff", False),
+        ("AA:BB:CC:DD:EE:FF", False),
+        ("AA-BB-CC-DD-EE-FF", False),
+        ("aabbccddeeff", False),
+        ("11:22:33:44:55:66", True),
+    ],
+)
+async def test_local_reconfigure_compares_normalized_hardware_addresses(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    stored: str,
+    *,
+    mismatch: bool,
+) -> None:
+    """Accept equivalent hardware spellings and reject a genuinely different MAC."""
+    entry = _entry(hass, stored)
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+            CONF_HOST: "https://console.example",
+        },
+    )
+    previous_data = dict(entry.data)
+    row = _row(
+        entity_registry,
+        entry,
+        "sensor",
+        build_site_unique_id(
+            normalize_console_namespace(stored), "site_shared", "site_total_clients"
+        ),
+        "site_total_clients",
+    )
+    before = attr.asdict(row)
+    discovered = "aa:bb:cc:dd:ee:ff"
+    with (
+        patch.object(
+            UnifiInsightsConfigFlow,
+            "_async_validate_local_connection",
+            AsyncMock(return_value=(True, None, {"mac": discovered})),
+        ),
+        patch(
+            "custom_components.unifi_insights.async_setup_entry", return_value=True
+        ) as setup,
+        patch("custom_components.unifi_insights.async_unload_entry", return_value=True),
+        patch(
+            "custom_components.unifi_insights.async_migrate_entry", return_value=True
+        ),
+    ):
+        flow = await entry.start_reconfigure_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"],
+            user_input={
+                CONF_HOST: "https://new-console.example",
+                CONF_API_KEY: "pending_credential",
+                CONF_VERIFY_SSL: False,
+            },
+        )
+        await hass.async_block_till_done()
+        if entry.state is config_entries.ConfigEntryState.LOADED:
+            assert await hass.config_entries.async_unload(entry.entry_id)
+    assert result["type"] == FlowResultType.ABORT
+    if mismatch:
+        assert result["reason"] == "account_mismatch"
+        assert dict(entry.data) == previous_data
+        assert entry.unique_id == stored
+        assert attr.asdict(entity_registry.async_get(row.entity_id)) == before
+        setup.assert_not_called()
+    else:
+        assert result["reason"] == "reconfigure_successful"
+        assert entry.data[CONF_CONSOLE_ID] == entry.unique_id == discovered
+        assert entity_registry.async_get(
+            row.entity_id
+        ).unique_id == build_site_unique_id(
+            discovered, "site_shared", "site_total_clients"
+        )

@@ -2046,8 +2046,8 @@ async def test_local_flow_device_scan_skips_non_console_and_captures_name(
 
     Exercises the loop-continue branch when a device's type/model doesn't
     match any console token, and the case where a matched console exposes
-    a name but no usable mac - identity then falls back to the site id,
-    matching the device-scan-then-site-id fallback order.
+    a name but no usable MAC - identity then falls back to the normalized
+    configured host, keeping consoles sharing a site ID separate.
     """
     dev_switch = MagicMock()
     dev_switch.type = None

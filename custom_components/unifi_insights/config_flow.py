@@ -83,6 +83,7 @@ from .probe import (
     async_probe_with_client,
     is_transient_error,
 )
+from .topology_contract import normalize_mac as normalize_hardware_mac
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -959,34 +960,23 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                             is None
                         ):
                             current_id = None
-                        # Only a discovered hardware MAC may replace the stored
-                        # identity. Device inspection swallows transient errors
-                        # and then falls back to a site id or the host, and
-                        # that fallback would otherwise overwrite a real MAC
-                        # permanently: setup only backfills when console_id is
-                        # falsy, and the ":"-based mismatch guard below can
-                        # never fire again once the id stops looking like a MAC.
+                        # Keep the stored identity when device inspection cannot
+                        # discover hardware. A host fallback may be promoted
+                        # once the console reports a MAC, but two real hardware
+                        # addresses must still identify the same console.
                         new_id = (
                             console_info.get("mac")
                             or current_id
                             or console_info.get("id")
                         )
-                        if (
-                            new_id
-                            and current_id
-                            and ":" in new_id
-                            and ":" in current_id
-                            and new_id != current_id
-                        ):
+                        current_mac = normalize_hardware_mac(current_id)
+                        new_mac = normalize_hardware_mac(new_id)
+                        if current_mac and new_mac and new_mac != current_mac:
                             return self.async_abort(reason="account_mismatch")
 
-                        # The guard above only fires when both ids look like
-                        # MACs, so a legacy entry still keyed on a site id or
-                        # host slips past it. Setup and the migration both
-                        # check for an existing owner before claiming a
-                        # unique_id; async_update_reload_and_abort does not,
-                        # and Home Assistant will happily let two entries
-                        # share one.
+                        # A legacy host or site identity can adopt a MAC only
+                        # when another entry does not already own it. The native
+                        # update/reload helper does not enforce that ownership.
                         if new_id and new_id != entry.unique_id:
                             entries = self.hass.config_entries
                             owner = entries.async_entry_for_domain_unique_id(
