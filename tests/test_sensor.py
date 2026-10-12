@@ -2911,6 +2911,7 @@ class TestMigrateSensorUnits:
     def test_migrate_sets_refresh_flag_for_port_rx_bytes(self, hass, mock_config_entry):
         """Test migration sets refresh_initial_entity_options for port_rx_bytes."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.domain = "sensor"
         mock_entry.unique_id = "aa:bb:cc:dd:ee:ff_port_rx_bytes"
         mock_entry.entity_id = "sensor.device_port_rx_bytes"
@@ -2939,6 +2940,7 @@ class TestMigrateSensorUnits:
     def test_migrate_skips_non_sensor_entities(self, hass, mock_config_entry):
         """Test migration skips non-sensor domain entities."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.domain = "binary_sensor"
         mock_entry.unique_id = "aa:bb:cc:dd:ee:ff_port_rx_bytes"
         mock_entry.entity_id = "binary_sensor.something"
@@ -2963,6 +2965,7 @@ class TestMigrateSensorUnits:
     def test_migrate_skips_already_correct_units(self, hass, mock_config_entry):
         """Test migration skips entities whose suggested unit already matches."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.domain = "sensor"
         mock_entry.unique_id = "aa:bb:cc:dd:ee:ff_port_tx_bytes"
         mock_entry.entity_id = "sensor.device_port_tx_bytes"
@@ -2991,6 +2994,7 @@ class TestMigrateSensorUnits:
     def test_migrate_skips_unrelated_sensor_keys(self, hass, mock_config_entry):
         """Test migration skips sensors whose key has no suggested unit."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.domain = "sensor"
         mock_entry.unique_id = "aa:bb:cc:dd:ee:ff_cpu_utilization"
         mock_entry.entity_id = "sensor.device_cpu_utilization"
@@ -3015,6 +3019,7 @@ class TestMigrateSensorUnits:
     def test_migrate_handles_uplink_rate_sensors(self, hass, mock_config_entry):
         """Test migration sets refresh flag for uplink rate sensors."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.domain = "sensor"
         mock_entry.unique_id = "aa:bb:cc:dd:ee:ff_tx_rate"
         mock_entry.entity_id = "sensor.device_tx_rate"
@@ -3125,6 +3130,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.native_value == 3
 
@@ -3139,6 +3145,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.native_value == 2
 
@@ -3153,6 +3160,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.native_value == 1
 
@@ -3165,8 +3173,9 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
-        assert sensor.unique_id == "site1_site_total_clients"
+        assert sensor.unique_id == "console_site1_site_total_clients"
 
     async def test_available(self, hass: HomeAssistant, mock_coordinator_with_clients):
         """Test availability follows coordinator update success."""
@@ -3177,6 +3186,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.available is True
 
@@ -3194,6 +3204,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         # device2 is a UDM-Pro gateway, so the sensor should attach to it
         device_info = sensor.device_info
@@ -3228,6 +3239,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         device_info = sensor.device_info
         assert device_info is not None
@@ -3247,6 +3259,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.native_value == 0
 
@@ -3266,6 +3279,7 @@ class TestAsyncSetupEntrySiteClientSensors:
         }
 
         config_entry = MagicMock()
+        config_entry.data = {"console_id": "console"}
         config_entry.runtime_data = MagicMock()
         config_entry.runtime_data.mobility_coordinator = None
         config_entry.runtime_data.coordinator = mock_coordinator
@@ -3280,7 +3294,8 @@ class TestAsyncSetupEntrySiteClientSensors:
             patch(
                 "custom_components.unifi_insights.sensor.er.async_get",
                 return_value=MagicMock(
-                    async_entries_for_config_entry=MagicMock(return_value=[])
+                    async_entries_for_config_entry=MagicMock(return_value=[]),
+                    async_get_entity_id=MagicMock(return_value=None),
                 ),
             ),
             patch(
@@ -3306,6 +3321,7 @@ class TestAsyncSetupEntrySiteClientSensors:
         mock_coordinator.data["clients"] = {}
 
         config_entry = MagicMock()
+        config_entry.data = {"console_id": "console"}
         config_entry.runtime_data = MagicMock()
         config_entry.runtime_data.mobility_coordinator = None
         config_entry.runtime_data.coordinator = mock_coordinator
@@ -3320,7 +3336,8 @@ class TestAsyncSetupEntrySiteClientSensors:
             patch(
                 "custom_components.unifi_insights.sensor.er.async_get",
                 return_value=MagicMock(
-                    async_entries_for_config_entry=MagicMock(return_value=[])
+                    async_entries_for_config_entry=MagicMock(return_value=[]),
+                    async_get_entity_id=MagicMock(return_value=None),
                 ),
             ),
             patch(
@@ -3342,6 +3359,7 @@ class TestAsyncSetupEntrySiteClientSensors:
         mock_coordinator.data["wifi"] = "not-a-dict"
 
         config_entry = MagicMock()
+        config_entry.data = {"console_id": "console"}
         config_entry.runtime_data = MagicMock()
         config_entry.runtime_data.mobility_coordinator = None
         config_entry.runtime_data.coordinator = mock_coordinator
@@ -3356,7 +3374,8 @@ class TestAsyncSetupEntrySiteClientSensors:
             patch(
                 "custom_components.unifi_insights.sensor.er.async_get",
                 return_value=MagicMock(
-                    async_entries_for_config_entry=MagicMock(return_value=[])
+                    async_entries_for_config_entry=MagicMock(return_value=[]),
+                    async_get_entity_id=MagicMock(return_value=None),
                 ),
             ),
             patch(
@@ -3910,12 +3929,13 @@ class TestUnifiSiteInternetActivitySensor:
                 coordinator=coordinator,
                 description=desc,
                 site_id="site1",
+                unique_id="console_site1_" + desc.key,
             )
             assert "_attr_name" not in sensor.__dict__
             assert sensor.entity_description.name == desc.name
             assert isinstance(desc.name, str)
             assert desc.name.startswith("Internet ")
-            assert sensor.unique_id == f"site1_{desc.key}"
+            assert sensor.unique_id == f"console_site1_{desc.key}"
             assert sensor.available is True
             assert sensor.native_value == expected_keys[desc.key]
             assert sensor.extra_state_attributes == {
@@ -3925,7 +3945,9 @@ class TestUnifiSiteInternetActivitySensor:
                 "report_interval": desc.report_interval,
             }
 
-    def test_unavailable_when_section_unavailable_or_window_missing(self) -> None:
+    def test_unavailable_when_section_unavailable_or_window_missing(
+        self, hass, mock_config_entry
+    ) -> None:
         """Sensor is unavailable on failed refresh or missing window."""
         desc = SITE_INTERNET_ACTIVITY_SENSOR_TYPES[0]
         coordinator = MagicMock()
@@ -3942,6 +3964,7 @@ class TestUnifiSiteInternetActivitySensor:
             coordinator=coordinator,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.available is True
 
@@ -3981,15 +4004,51 @@ class TestUnifiSiteInternetActivitySensor:
         assert sensor.native_value is None
         coordinator.data["internet_activity"]["site1"] = "not_a_dict"
         assert sensor.native_value is None
-        assert _discover_site_internet_activity_sensors(coordinator, set()) == []
+        assert (
+            _discover_site_internet_activity_sensors(
+                coordinator,
+                set(),
+                hass=hass,
+                entry=mock_config_entry,
+                namespace="console",
+            )
+            == []
+        )
         coordinator.data["internet_activity"] = {"site1": {"1h": {"rx_bytes": 100}}}
         known_keys: set[tuple[str, ...]] = set()
         assert (
-            len(_discover_site_internet_activity_sensors(coordinator, known_keys)) == 1
+            len(
+                _discover_site_internet_activity_sensors(
+                    coordinator,
+                    known_keys,
+                    hass=hass,
+                    entry=mock_config_entry,
+                    namespace="console",
+                )
+            )
+            == 1
         )
-        assert _discover_site_internet_activity_sensors(coordinator, known_keys) == []
+        assert (
+            _discover_site_internet_activity_sensors(
+                coordinator,
+                known_keys,
+                hass=hass,
+                entry=mock_config_entry,
+                namespace="console",
+            )
+            == []
+        )
         coordinator.data["internet_activity"] = "not_a_dict"
-        assert _discover_site_internet_activity_sensors(coordinator, set()) == []
+        assert (
+            _discover_site_internet_activity_sensors(
+                coordinator,
+                set(),
+                hass=hass,
+                entry=mock_config_entry,
+                namespace="console",
+            )
+            == []
+        )
         assert sensor.native_value is None
         coordinator.data = None
         assert sensor.native_value is None
@@ -4148,7 +4207,12 @@ class TestSensorAdditionalCoverageGaps:
         coordinator.device_available = True
         coordinator.data = {"clients": {"site1": None}}
         desc = SITE_CLIENT_SENSOR_TYPES[0]
-        sensor = UnifiSiteClientSensor(coordinator, desc, "site1")
+        sensor = UnifiSiteClientSensor(
+            coordinator,
+            desc,
+            "site1",
+            unique_id="console_site1_" + desc.key,
+        )
         assert sensor.native_value == 0
 
     def test_wifi_client_count_sensor_branches(self) -> None:
@@ -4257,6 +4321,7 @@ class TestSensorAdditionalCoverageGaps:
         listeners = []
         coordinator.async_add_listener = listeners.append
 
+        mock_config_entry.data = {"console_id": "console"}
         mock_config_entry.runtime_data = MagicMock(
             coordinator=coordinator, mobility_coordinator=None
         )
@@ -4268,7 +4333,9 @@ class TestSensorAdditionalCoverageGaps:
         with (
             patch(
                 "custom_components.unifi_insights.sensor.er.async_get",
-                return_value=MagicMock(),
+                return_value=MagicMock(
+                    async_get_entity_id=MagicMock(return_value=None)
+                ),
             ),
             patch(
                 "custom_components.unifi_insights.sensor.er.async_entries_for_config_entry",

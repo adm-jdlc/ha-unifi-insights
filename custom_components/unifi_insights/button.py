@@ -24,6 +24,7 @@ from .client_wake import (
     mac_from_wake_unique_id,
     wake_unique_id,
 )
+from .console_identity import resolve_console_namespace
 from .const import (
     ATTR_CHIME_ID,
     ATTR_CHIME_NAME,
@@ -48,6 +49,7 @@ from .entity import (
     get_client_type,
     get_field,
 )
+from .helpers import async_migrate_site_entity
 from .topology_contract import normalize_mac
 
 if TYPE_CHECKING:
@@ -294,12 +296,20 @@ async def async_setup_entry(
             CONF_CLIENT_CONTROL, DEFAULT_CLIENT_CONTROL
         )
         entities: list[ButtonEntity] = []
+        namespace = resolve_console_namespace(config_entry)
 
         for site_id in voucher_site_ids(coordinator.data):
             voucher_key = (site_id, "generate_voucher")
             if voucher_key in known_button_keys:
                 continue
-            button = UnifiGenerateVoucherButton(coordinator, site_id)
+            unique_id = async_migrate_site_entity(
+                hass, config_entry, "button", namespace, site_id, "generate_voucher"
+            )
+            if unique_id is None:
+                continue
+            button = UnifiGenerateVoucherButton(
+                coordinator, site_id, unique_id=unique_id
+            )
             known_button_keys.add(voucher_key)
             entities.append(button)
 
@@ -878,11 +888,13 @@ class UnifiGenerateVoucherButton(
         self,
         coordinator: UnifiFacadeCoordinator,
         site_id: str,
+        *,
+        unique_id: str,
     ) -> None:
         """Initialize the voucher generation button."""
         super().__init__(coordinator)
         self._site_id = site_id
-        self._attr_unique_id = f"{site_id}_generate_voucher"
+        self._attr_unique_id = unique_id
         self._attr_device_info = DeviceInfo(
             **build_site_device_info(coordinator.data, site_id)  # type: ignore[typeddict-item]
         )

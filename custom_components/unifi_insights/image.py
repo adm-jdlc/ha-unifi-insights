@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from .api.exceptions import UniFiError
+from .console_identity import resolve_console_namespace
 from .const import DOMAIN, MANUFACTURER
 from .coordinators import UnifiFacadeCoordinator
 from .coordinators.voucher_state import (
@@ -25,6 +26,7 @@ from .coordinators.voucher_state import (
     voucher_site_ids,
 )
 from .entity import build_site_device_info
+from .helpers import async_migrate_site_entity
 from .innerspace_transforms import parse_floor_plan_asset_path, strip_url_query
 
 if TYPE_CHECKING:
@@ -123,10 +125,18 @@ async def async_setup_entry(
                     )
 
         # Hotspot voucher QR codes
+        namespace = resolve_console_namespace(entry)
         for site_id in voucher_site_ids(coordinator.data):
             if site_id in known_voucher_keys:
                 continue
-            entity = UnifiVoucherQrCodeImage(hass, coordinator, site_id)
+            unique_id = async_migrate_site_entity(
+                hass, entry, "image", namespace, site_id, "voucher_qr_code"
+            )
+            if unique_id is None:
+                continue
+            entity = UnifiVoucherQrCodeImage(
+                hass, coordinator, site_id, unique_id=unique_id
+            )
             known_voucher_keys.add(site_id)
             new_entities.append(entity)
 
@@ -447,13 +457,15 @@ class UnifiVoucherQrCodeImage(CoordinatorEntity[UnifiFacadeCoordinator], ImageEn
         hass: HomeAssistant,
         coordinator: UnifiFacadeCoordinator,
         site_id: str,
+        *,
+        unique_id: str,
     ) -> None:
         """Initialize the voucher QR code image."""
         CoordinatorEntity.__init__(self, coordinator)
         ImageEntity.__init__(self, hass)
         self.hass = hass
         self._site_id = site_id
-        self._attr_unique_id = f"{site_id}_voucher_qr_code"
+        self._attr_unique_id = unique_id
         self._attr_device_info = DeviceInfo(
             **build_site_device_info(coordinator.data, site_id)  # type: ignore[typeddict-item]
         )

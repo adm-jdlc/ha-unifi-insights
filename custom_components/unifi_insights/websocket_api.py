@@ -23,6 +23,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util.hass_dict import HassKey
 
 from .carrier_fabric_data import CarrierFabricData
+from .console_identity import resolve_console_namespace
 from .const import DOMAIN
 from .dashboard_contract_utils import as_dict, content_revision
 from .helpers import async_get_device_entry
@@ -285,6 +286,7 @@ def _generic_site_payload(
             entry_id=entry.entry_id,
             site_id=site_id,
             entity_registry=er.async_get(hass),
+            namespace=resolve_console_namespace(entry),
         )
     if payload_type == "performance":
         return build_performance_snapshot(

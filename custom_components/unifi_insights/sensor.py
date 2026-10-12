@@ -28,6 +28,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .console_identity import resolve_console_namespace
 from .const import (
     ATTR_NVR_ID,
     ATTR_NVR_NAME,
@@ -61,6 +62,7 @@ from .entity import (
 from .entity import (
     get_client_type as _get_client_type,
 )
+from .helpers import async_migrate_site_entity
 from .innerspace_entity import (
     _discover_innerspace_sensors,
 )
@@ -1397,28 +1399,53 @@ async def async_setup_entry(
                     )
 
         # Add site-level client count sensors
+        namespace = resolve_console_namespace(config_entry)
         clients_by_site = coordinator.data.get("clients", {})
         if isinstance(clients_by_site, dict):
             for site_id in clients_by_site:
                 for site_desc in SITE_CLIENT_SENSOR_TYPES:
                     site_key = (site_id, site_desc.key)
                     if site_key not in known_sensor_keys:
-                        known_sensor_keys.add(site_key)
-                        entities.append(
-                            UnifiSiteClientSensor(
-                                coordinator=coordinator,
-                                description=site_desc,
-                                site_id=site_id,
-                            )
+                        unique_id = async_migrate_site_entity(
+                            hass,
+                            config_entry,
+                            "sensor",
+                            namespace,
+                            site_id,
+                            site_desc.key,
                         )
+                        if unique_id is None:
+                            continue
+                        entity = UnifiSiteClientSensor(
+                            coordinator=coordinator,
+                            description=site_desc,
+                            site_id=site_id,
+                            unique_id=unique_id,
+                        )
+                        known_sensor_keys.add(site_key)
+                        entities.append(entity)
 
         # Add site-level internet activity rolling-window sensors
         entities.extend(
-            _discover_site_internet_activity_sensors(coordinator, known_sensor_keys)
+            _discover_site_internet_activity_sensors(
+                coordinator,
+                known_sensor_keys,
+                hass=hass,
+                entry=config_entry,
+                namespace=namespace,
+            )
         )
 
         # Add hotspot voucher management sensors
-        entities.extend(discover_voucher_sensors(coordinator, known_sensor_keys))
+        entities.extend(
+            discover_voucher_sensors(
+                coordinator,
+                known_sensor_keys,
+                hass=hass,
+                entry=config_entry,
+                namespace=namespace,
+            )
+        )
 
         # Add per-WiFi-network connected client count sensors
         wifi_by_site = coordinator.data.get("wifi", {})
@@ -2241,13 +2268,15 @@ class UnifiSiteClientSensor(CoordinatorEntity[UnifiFacadeCoordinator], SensorEnt
         coordinator: UnifiFacadeCoordinator,
         description: UnifiInsightsSensorEntityDescription,
         site_id: str,
+        *,
+        unique_id: str,
     ) -> None:
         """Initialize the site-level client sensor."""
         super().__init__(coordinator)
         self.entity_description = description
         self._site_id = site_id
 
-        self._attr_unique_id = f"{site_id}_{description.key}"
+        self._attr_unique_id = unique_id
         self._attr_device_info = DeviceInfo(**self._build_device_info())  # type: ignore[typeddict-item]
 
     def _build_device_info(self) -> dict[str, Any]:

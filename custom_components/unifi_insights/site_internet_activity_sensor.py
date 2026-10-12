@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -17,6 +21,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .coordinators import UnifiFacadeCoordinator
 from .entity import build_site_device_info, find_site_gateway_device_id
+from .helpers import async_migrate_site_entity
 
 
 @dataclass
@@ -188,13 +193,15 @@ class UnifiSiteInternetActivitySensor(
         coordinator: UnifiFacadeCoordinator,
         description: UnifiSiteInternetActivitySensorEntityDescription,
         site_id: str,
+        *,
+        unique_id: str,
     ) -> None:
         """Initialize the site internet activity sensor."""
         super().__init__(coordinator)
         self.entity_description = description
         self._site_id = site_id
 
-        self._attr_unique_id = f"{site_id}_{description.key}"
+        self._attr_unique_id = unique_id
         self._attr_device_info = DeviceInfo(**self._build_device_info())  # type: ignore[typeddict-item]
         self._attr_extra_state_attributes = {
             "period": description.period_label,
@@ -261,6 +268,10 @@ class UnifiSiteInternetActivitySensor(
 def _discover_site_internet_activity_sensors(
     coordinator: UnifiFacadeCoordinator,
     known_sensor_keys: set[tuple[str, ...]],
+    *,
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    namespace: str | None,
 ) -> list[SensorEntity]:
     """Discover site-level historical internet activity sensors."""
     entities: list[SensorEntity] = []
@@ -280,13 +291,18 @@ def _discover_site_internet_activity_sensors(
                 continue
             activity_key = (site_id, activity_desc.key)
             if activity_key not in known_sensor_keys:
-                known_sensor_keys.add(activity_key)
-                entities.append(
-                    UnifiSiteInternetActivitySensor(
-                        coordinator=coordinator,
-                        description=activity_desc,
-                        site_id=site_id,
-                    )
+                unique_id = async_migrate_site_entity(
+                    hass, entry, "sensor", namespace, site_id, activity_desc.key
                 )
+                if unique_id is None:
+                    continue
+                entity = UnifiSiteInternetActivitySensor(
+                    coordinator=coordinator,
+                    description=activity_desc,
+                    site_id=site_id,
+                    unique_id=unique_id,
+                )
+                known_sensor_keys.add(activity_key)
+                entities.append(entity)
 
     return entities

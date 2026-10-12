@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from custom_components.unifi_insights.api.protect.models.camera import (
     CameraState,
@@ -45,6 +46,11 @@ from custom_components.unifi_insights.timeline import (
 
 
 class _FakeEntityRegistry:
+    def async_get(self, entity_id):
+        return SimpleNamespace(
+            config_entry_id="entry-1", translation_key="internet_download_1h"
+        )
+
     def async_get_entity_id(
         self,
         domain: str,
@@ -689,4 +695,3 @@ def test_protect_snapshot_handles_str_enums_and_is_connected_fallback() -> None:
     assert enum_str(42) == "42"
     assert is_protect_device_connected({"is_connected": True}) is True
     assert is_protect_device_connected({"isConnected": False}) is False
-

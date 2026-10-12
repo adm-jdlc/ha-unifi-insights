@@ -89,6 +89,7 @@ def mock_config_entry(mock_coordinator: MagicMock) -> MagicMock:
     """Create a mock config entry."""
     entry = MagicMock()
     entry.entry_id = "test_entry_id"
+    entry.data = {"console_id": "console"}
     entry.options = {CONF_CLIENT_CONTROL: True}
     entry.async_on_unload = MagicMock()
     entry.async_create_background_task.side_effect = lambda hass, target, name: (
@@ -797,12 +798,12 @@ class TestDiscoveryRegressions:
         initial_site_ids = {
             e.unique_id
             for e in initial_entities
-            if getattr(e, "unique_id", "").startswith("site1_site_")
+            if getattr(e, "unique_id", "").startswith("console_site1_site_")
         }
         assert initial_site_ids == {
-            "site1_site_total_clients",
-            "site1_site_wired_clients",
-            "site1_site_wireless_clients",
+            "console_site1_site_total_clients",
+            "console_site1_site_wired_clients",
+            "console_site1_site_wireless_clients",
         }
         assert not [
             e
@@ -826,14 +827,14 @@ class TestDiscoveryRegressions:
         discovered = add_entities.call_args[0][0]
         discovered_ids = {e.unique_id for e in discovered}
         assert discovered_ids == {
-            "site1_internet_download_1h",
-            "site1_internet_upload_1h",
-            "site1_internet_download_1d",
-            "site1_internet_upload_1d",
-            "site1_internet_download_1w",
-            "site1_internet_upload_1w",
-            "site1_internet_download_1m",
-            "site1_internet_upload_1m",
+            "console_site1_internet_download_1h",
+            "console_site1_internet_upload_1h",
+            "console_site1_internet_download_1d",
+            "console_site1_internet_upload_1d",
+            "console_site1_internet_download_1w",
+            "console_site1_internet_upload_1w",
+            "console_site1_internet_download_1m",
+            "console_site1_internet_upload_1m",
         }
 
         # Subsequent listener call does not duplicate sensors

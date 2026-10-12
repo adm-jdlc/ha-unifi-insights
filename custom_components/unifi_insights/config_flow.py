@@ -43,6 +43,7 @@ from .console_identity import (
     DEFAULT_SITE_ID,
     device_fields,
     first_non_default_site_id,
+    normalize_console_namespace,
     normalize_mac,
     resolve_console_identity,
 )
@@ -69,6 +70,7 @@ from .const import (
     DEFAULT_TRACK_SUBSCRIBERS,
     DOMAIN,
 )
+from .helpers import SiteEntityIdentityError, async_rekey_site_entities
 from .probe import (
     ProbeResult,
     ProbeStatus,
@@ -750,6 +752,12 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                         verify_ssl=reauth_entry.data.get(CONF_VERIFY_SSL, False),
                     )
                     if is_valid:
+                        async_rekey_site_entities(
+                            self.hass,
+                            reauth_entry,
+                            reauth_entry.data.get(CONF_CONSOLE_ID),
+                            pending_api_key=user_input[CONF_API_KEY],
+                        )
                         return self.async_update_reload_and_abort(
                             reauth_entry,
                             data={
@@ -782,6 +790,12 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                                     console_id,
                                 )
                                 if sites_found:
+                                    async_rekey_site_entities(
+                                        self.hass,
+                                        reauth_entry,
+                                        console_id,
+                                        pending_api_key=api_key,
+                                    )
                                     return self.async_update_reload_and_abort(
                                         reauth_entry,
                                         data={
@@ -794,6 +808,9 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                             except UniFiAuthenticationError:
                                 errors["base"] = "invalid_console_id"
 
+            except SiteEntityIdentityError as err:
+                _LOGGER.warning("Cannot change console identity safely: %s", err)
+                errors["base"] = "site_entity_identity_conflict"
             except UniFiAuthenticationError:
                 errors[CONF_API_KEY] = "invalid_auth"
             except UniFiConnectionError:
@@ -875,6 +892,17 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                     if is_valid:
                         current_id = entry.data.get(CONF_CONSOLE_ID) or entry.unique_id
+                        if (
+                            normalize_console_namespace(
+                                current_id,
+                                credentials=(
+                                    entry.data.get(CONF_API_KEY),
+                                    user_input[CONF_API_KEY],
+                                ),
+                            )
+                            is None
+                        ):
+                            current_id = None
                         # Only a discovered hardware MAC may replace the stored
                         # identity. Device inspection swallows transient errors
                         # and then falls back to a site id or the host, and
@@ -920,6 +948,12 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                         if new_id:
                             new_data[CONF_CONSOLE_ID] = new_id
 
+                        async_rekey_site_entities(
+                            self.hass,
+                            entry,
+                            new_id,
+                            pending_api_key=user_input[CONF_API_KEY],
+                        )
                         return self.async_update_reload_and_abort(
                             entry,
                             data=new_data,
@@ -966,6 +1000,12 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                                         CONF_CONSOLE_ID: console_id,
                                         CONF_API_KEY: api_key,
                                     }
+                                    async_rekey_site_entities(
+                                        self.hass,
+                                        entry,
+                                        console_id,
+                                        pending_api_key=api_key,
+                                    )
                                     return self.async_update_reload_and_abort(
                                         entry,
                                         data=new_data,
@@ -976,6 +1016,9 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                             except UniFiAuthenticationError:
                                 errors[CONF_CONSOLE_ID] = "invalid_console_id"
 
+            except SiteEntityIdentityError as err:
+                _LOGGER.warning("Cannot change console identity safely: %s", err)
+                errors["base"] = "site_entity_identity_conflict"
             except UniFiAuthenticationError:
                 errors[CONF_API_KEY] = "invalid_auth"
             except UniFiConnectionError:

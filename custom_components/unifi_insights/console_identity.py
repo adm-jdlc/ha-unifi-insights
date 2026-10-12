@@ -20,10 +20,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .const import CONSOLE_DEVICE_TOKENS
+from homeassistant.const import CONF_API_KEY
+
+from .const import CONF_CONSOLE_ID, CONSOLE_DEVICE_TOKENS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from homeassistant.config_entries import ConfigEntry
 
 # The site id a controller reports when it has only the implicit default site.
 # It is identical across consoles, so it can never identify one.
@@ -45,6 +49,52 @@ def normalize_mac(mac: Any) -> str | None:
     if not isinstance(mac, str) or not mac:
         return None
     return mac.lower().replace("-", ":")
+
+
+def normalize_console_namespace(
+    value: Any, *, credentials: Iterable[Any] = ()
+) -> str | None:
+    """Normalize a stored console identity, rejecting credentials and bad values."""
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    if not trimmed or any(char.isspace() or not char.isprintable() for char in trimmed):
+        return None
+    credential_values = tuple(
+        credential
+        for credential in credentials
+        if isinstance(credential, str) and credential
+    )
+    if value in credential_values:
+        return None
+    namespace = normalize_mac(trimmed)
+    if any(
+        namespace == normalize_mac(credential.strip())
+        for credential in credential_values
+    ):
+        return None
+    return namespace
+
+
+def resolve_console_namespace(entry: ConfigEntry) -> str | None:
+    """Read the canonical namespace without a host or display-name fallback."""
+    return normalize_console_namespace(
+        entry.data.get(CONF_CONSOLE_ID),
+        credentials=(entry.data.get(CONF_API_KEY),),
+    )
+
+
+def build_legacy_site_unique_id(site_id: str, suffix: str) -> str:
+    """Build the exact pre-namespace site identity for registry migration."""
+    return f"{site_id}_{suffix}"
+
+
+def build_site_unique_id(namespace: str, site_id: str, suffix: str) -> str:
+    """Build a logical-site identity using an already validated namespace."""
+    if normalize_console_namespace(namespace) != namespace or not namespace:
+        err_msg = "A validated console namespace is required"
+        raise ValueError(err_msg)
+    return f"{namespace}_{build_legacy_site_unique_id(site_id, suffix)}"
 
 
 def device_mac(dev_data: dict[str, Any]) -> str | None:

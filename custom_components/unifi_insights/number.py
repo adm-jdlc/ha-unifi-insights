@@ -18,6 +18,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .console_identity import resolve_console_namespace
 from .const import (
     ATTR_CAMERA_ID,
     ATTR_CAMERA_NAME,
@@ -45,6 +46,7 @@ from .entity import (
     async_call_coordinator_action,
     build_site_device_info,
 )
+from .helpers import async_migrate_site_entity
 from .led_level import led_level_to_percent, percent_to_led_level
 
 if TYPE_CHECKING:
@@ -116,9 +118,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up number entities for UniFi Protect integration."""
-    _ = hass
     coordinator: UnifiFacadeCoordinator = entry.runtime_data.coordinator
-    _async_setup_voucher_numbers(entry, coordinator, async_add_entities)
+    _async_setup_voucher_numbers(hass, entry, coordinator, async_add_entities)
 
     # Skip if Protect API is not available
     if not coordinator.protect_client:
@@ -504,6 +505,7 @@ class UnifiProtectChimeRepeatTimesNumber(UnifiProtectEntity, NumberEntity):
 
 
 def _async_setup_voucher_numbers(
+    hass: HomeAssistant,
     entry: UnifiInsightsConfigEntry,
     coordinator: UnifiFacadeCoordinator,
     async_add_entities: AddEntitiesCallback,
@@ -517,12 +519,20 @@ def _async_setup_voucher_numbers(
     @callback
     def discover() -> None:
         new_entities: list[UnifiVoucherInputNumber] = []
+        namespace = resolve_console_namespace(entry)
         for site_id in voucher_site_ids(coordinator.data):
             for description in VOUCHER_NUMBER_DESCRIPTIONS:
                 key = (site_id, description.key)
                 if key in known:
                     continue
-                entity = UnifiVoucherInputNumber(coordinator, description, site_id)
+                unique_id = async_migrate_site_entity(
+                    hass, entry, "number", namespace, site_id, description.key
+                )
+                if unique_id is None:
+                    continue
+                entity = UnifiVoucherInputNumber(
+                    coordinator, description, site_id, unique_id=unique_id
+                )
                 known.add(key)
                 new_entities.append(entity)
         if new_entities:
@@ -544,12 +554,14 @@ class UnifiVoucherInputNumber(CoordinatorEntity[UnifiFacadeCoordinator], Restore
         coordinator: UnifiFacadeCoordinator,
         description: NumberEntityDescription,
         site_id: str,
+        *,
+        unique_id: str,
     ) -> None:
         """Initialize the voucher input number."""
         super().__init__(coordinator)
         self.entity_description = description
         self._site_id = site_id
-        self._attr_unique_id = f"{site_id}_{description.key}"
+        self._attr_unique_id = unique_id
         self._attr_device_info = DeviceInfo(
             **build_site_device_info(coordinator.data, site_id)  # type: ignore[typeddict-item]
         )

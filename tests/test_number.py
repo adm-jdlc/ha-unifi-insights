@@ -85,6 +85,7 @@ class TestAsyncSetupEntry:
         mock_coordinator.protect_client = None
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = mock_coordinator
 
@@ -108,6 +109,7 @@ class TestAsyncSetupEntry:
         }
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = mock_coordinator
 
@@ -132,6 +134,7 @@ class TestAsyncSetupEntry:
         }
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = mock_coordinator
 
@@ -156,6 +159,7 @@ class TestAsyncSetupEntry:
         }
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = mock_coordinator
 
@@ -185,6 +189,7 @@ class TestAsyncSetupEntry:
         }
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = mock_coordinator
 
@@ -863,12 +868,15 @@ class TestVoucherNumbers:
     ) -> None:
         """Voucher numbers are created even when protect_client is None."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data.coordinator = voucher_coordinator
         added_entities = []
 
         await async_setup_entry(hass, mock_entry, added_entities.extend)
         assert len(added_entities) == 5
-        expected_ids = {f"site1_{desc.key}" for desc in VOUCHER_NUMBER_DESCRIPTIONS}
+        expected_ids = {
+            f"console_site1_{desc.key}" for desc in VOUCHER_NUMBER_DESCRIPTIONS
+        }
         assert {e.unique_id for e in added_entities} == expected_ids
 
     @pytest.mark.asyncio
@@ -879,6 +887,7 @@ class TestVoucherNumbers:
         voucher_coordinator.data["sites"]["site2"] = {"id": "site2", "name": "Branch"}
         voucher_coordinator.data["vouchers"]["site2"] = {}
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data.coordinator = voucher_coordinator
         added_entities = []
 
@@ -892,6 +901,7 @@ class TestVoucherNumbers:
         """Voucher numbers are skipped if data has sites but lacks vouchers section."""
         del voucher_coordinator.data["vouchers"]
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data.coordinator = voucher_coordinator
         add_entities = MagicMock()
 
@@ -904,6 +914,7 @@ class TestVoucherNumbers:
     ) -> None:
         """Adding a site dynamically triggers discovery exactly once."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data.coordinator = voucher_coordinator
         added_entities = []
 
@@ -932,19 +943,20 @@ class TestVoucherNumbers:
     ) -> None:
         """A failed entity construction is not recorded in known and is retried."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data.coordinator = voucher_coordinator
         added_entities = []
 
         call_count = 0
         original_init = UnifiVoucherInputNumber.__init__
 
-        def flaky_init(self, coord, desc, site_id):
+        def flaky_init(self, coord, desc, site_id, *, unique_id):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 err_msg = "Failed once"
                 raise RuntimeError(err_msg)
-            original_init(self, coord, desc, site_id)
+            original_init(self, coord, desc, site_id, unique_id=unique_id)
 
         with (
             patch.object(UnifiVoucherInputNumber, "__init__", flaky_init),
@@ -1002,7 +1014,12 @@ class TestVoucherNumbers:
     ) -> None:
         """Test metadata and bounds for each voucher number entity."""
         desc = next(d for d in VOUCHER_NUMBER_DESCRIPTIONS if d.key == key)
-        entity = UnifiVoucherInputNumber(voucher_coordinator, desc, "site1")
+        entity = UnifiVoucherInputNumber(
+            voucher_coordinator,
+            desc,
+            "site1",
+            unique_id="console_site1_" + desc.key,
+        )
         assert entity.entity_description.native_unit_of_measurement == unit
         assert entity.entity_description.device_class == dev_class
         assert entity.entity_description.native_min_value == min_v
@@ -1020,7 +1037,12 @@ class TestVoucherNumbers:
         desc = next(
             d for d in VOUCHER_NUMBER_DESCRIPTIONS if d.key == "voucher_duration"
         )
-        entity = UnifiVoucherInputNumber(voucher_coordinator, desc, "site1")
+        entity = UnifiVoucherInputNumber(
+            voucher_coordinator,
+            desc,
+            "site1",
+            unique_id="console_site1_" + desc.key,
+        )
         assert entity.native_value == 480
 
     @pytest.mark.asyncio
@@ -1031,7 +1053,12 @@ class TestVoucherNumbers:
         desc_int = next(
             d for d in VOUCHER_NUMBER_DESCRIPTIONS if d.key == "voucher_duration"
         )
-        entity_int = UnifiVoucherInputNumber(voucher_coordinator, desc_int, "site1")
+        entity_int = UnifiVoucherInputNumber(
+            voucher_coordinator,
+            desc_int,
+            "site1",
+            unique_id="console_site1_" + desc_int.key,
+        )
         entity_int.async_write_ha_state = MagicMock()
 
         await entity_int.async_set_native_value(60)
@@ -1043,7 +1070,12 @@ class TestVoucherNumbers:
         desc_float = next(
             d for d in VOUCHER_NUMBER_DESCRIPTIONS if d.key == "voucher_download_limit"
         )
-        entity_float = UnifiVoucherInputNumber(voucher_coordinator, desc_float, "site1")
+        entity_float = UnifiVoucherInputNumber(
+            voucher_coordinator,
+            desc_float,
+            "site1",
+            unique_id="console_site1_" + desc_float.key,
+        )
         entity_float.async_write_ha_state = MagicMock()
 
         await entity_float.async_set_native_value(12.5)
@@ -1061,7 +1093,12 @@ class TestVoucherNumbers:
         desc = next(
             d for d in VOUCHER_NUMBER_DESCRIPTIONS if d.key == "voucher_duration"
         )
-        entity = UnifiVoucherInputNumber(voucher_coordinator, desc, "site1")
+        entity = UnifiVoucherInputNumber(
+            voucher_coordinator,
+            desc,
+            "site1",
+            unique_id="console_site1_" + desc.key,
+        )
         entity.hass = hass
 
         with patch.object(
@@ -1086,7 +1123,12 @@ class TestVoucherNumbers:
         desc = next(
             d for d in VOUCHER_NUMBER_DESCRIPTIONS if d.key == "voucher_duration"
         )
-        entity = UnifiVoucherInputNumber(voucher_coordinator, desc, "site1")
+        entity = UnifiVoucherInputNumber(
+            voucher_coordinator,
+            desc,
+            "site1",
+            unique_id="console_site1_" + desc.key,
+        )
         entity.hass = hass
 
         stored_data = (
@@ -1109,7 +1151,12 @@ class TestVoucherNumbers:
     ) -> None:
         """Availability follows coordinator.vouchers_available."""
         desc = VOUCHER_NUMBER_DESCRIPTIONS[0]
-        entity = UnifiVoucherInputNumber(voucher_coordinator, desc, "site1")
+        entity = UnifiVoucherInputNumber(
+            voucher_coordinator,
+            desc,
+            "site1",
+            unique_id="console_site1_" + desc.key,
+        )
         voucher_coordinator.vouchers_available.return_value = True
         assert entity.available is True
         voucher_coordinator.vouchers_available.return_value = False
@@ -1120,7 +1167,12 @@ class TestVoucherNumbers:
     ) -> None:
         """Device info groups under the site gateway device."""
         desc = VOUCHER_NUMBER_DESCRIPTIONS[0]
-        entity = UnifiVoucherInputNumber(voucher_coordinator, desc, "site1")
+        entity = UnifiVoucherInputNumber(
+            voucher_coordinator,
+            desc,
+            "site1",
+            unique_id="console_site1_" + desc.key,
+        )
         assert entity.device_info is not None
 
     @pytest.mark.asyncio
@@ -1135,6 +1187,7 @@ class TestVoucherNumbers:
             "chimes": {},
         }
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data.coordinator = voucher_coordinator
         added_entities = []
 
