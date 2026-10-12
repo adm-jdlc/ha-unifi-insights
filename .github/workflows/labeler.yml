@@ -1,89 +1,20 @@
 name: PR Labeler
 
+# Path labels from .github/labeler.yml, then exactly one type label (bug or enhancement).
+# The logic lives in the shared workflow; see STANDARDS.md in tinkerologie/.github.
+
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/labels.yml
-      - .github/workflows/labels.yml
-      - .github/labeler.yml
   pull_request_target: # zizmor: ignore[dangerous-triggers] -- no PR code is checked out or run
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
-  workflow_dispatch:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions:
   contents: read
 
 jobs:
-  apply:
+  label:
     name: Label
-    if: github.event_name == 'pull_request_target'
-    runs-on: ubuntu-latest
+    uses: tinkerologie/.github/.github/workflows/pr-labeler.yml@900fa98bc5142dc064a6c04455a0e9aa99f0746c # v1.5.2
     permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-    steps:
-      - name: Apply labels
-        uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          configuration-path: .github/labeler.yml
-          sync-labels: false
-
-      - name: Apply type labels (bug or enhancement)
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            const pr = context.payload.pull_request;
-            const title = (pr.title || "").toLowerCase();
-            const body = pr.body || "";
-            const labelsToAdd = new Set();
-
-            if (/^(feat|enhancement)(\(.*\))?:/.test(title)) {
-              labelsToAdd.add("enhancement");
-            } else if (/^(fix|bugfix|hotfix)(\(.*\))?:/.test(title)) {
-              labelsToAdd.add("bug");
-            }
-
-            if (/-\s*\[[xX]\]\s*(?:new feature|enhancement|new sensor)/i.test(body)) {
-              labelsToAdd.add("enhancement");
-            }
-            if (/-\s*\[[xX]\]\s*bug fix/i.test(body)) {
-              labelsToAdd.add("bug");
-            }
-
-            if (labelsToAdd.size === 0) {
-              const issueMatches = body.match(/#(?:[0-9]+)/g) || [];
-              for (const issueRef of issueMatches) {
-                const issueNum = parseInt(issueRef.replace("#", ""), 10);
-                if (!issueNum) continue;
-                try {
-                  const issue = await github.rest.issues.get({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: issueNum,
-                  });
-                  const issueLabels = (issue.data.labels || []).map((l) => (typeof l === "string" ? l : l.name));
-                  if (issueLabels.includes("enhancement")) labelsToAdd.add("enhancement");
-                  if (issueLabels.includes("bug")) labelsToAdd.add("bug");
-                } catch {
-                  // Ignore if issue cannot be fetched
-                }
-              }
-            }
-
-            if (labelsToAdd.size > 0) {
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pr.number,
-                labels: Array.from(labelsToAdd),
-              });
-              core.info(`Applied type labels: ${Array.from(labelsToAdd).join(", ")}`);
-            }
+      contents: read # read the labeler configuration
+      issues: write # add and remove labels
+      pull-requests: write # add and remove labels
