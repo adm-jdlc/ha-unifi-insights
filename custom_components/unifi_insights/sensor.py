@@ -78,6 +78,8 @@ from .site_internet_activity_sensor import (
 from .site_internet_activity_sensor import (
     _discover_site_internet_activity_sensors,
 )
+from .storage_entity import discover_storage_sensors, is_storage_unique_id
+from .storage_telemetry import normalize_nvr_storage
 from .voucher_sensor import discover_voucher_sensors
 
 if TYPE_CHECKING:
@@ -300,95 +302,37 @@ def _bytes_to_gb(bytes_value: int | None) -> float | None:
 
 
 def _has_storage_info(nvr_data: dict[str, Any]) -> bool:
-    """
-    Check if NVR data contains storage information.
-
-    The UniFi Protect Integration API v1 (public API with API keys) does not
-    return storage information. This function checks if storage data is available.
-    """
-    # Check for direct storage fields
-    if nvr_data.get("storageUsedBytes") or nvr_data.get("storageTotalBytes"):
-        return True
-    if nvr_data.get("storage_used_bytes") or nvr_data.get("storage_total_bytes"):
-        return True
-
-    # Check nested storageInfo
-    storage_info = nvr_data.get("storageInfo")
-    if isinstance(storage_info, dict):
-        # Check library model field names (usedSize, totalSize)
-        if storage_info.get("usedSize") or storage_info.get("totalSize"):
-            return True
-        # Check alternative field names
-        if storage_info.get("used_size") or storage_info.get("total_size"):
-            return True
-
-    return False
+    """Return True when at least one valid capacity signal exists."""
+    storage = normalize_nvr_storage(nvr_data)
+    return any(
+        value is not None
+        for value in (
+            storage.used_bytes,
+            storage.total_bytes,
+            storage.available_bytes,
+            storage.used_percent,
+        )
+    )
 
 
 def _get_storage_bytes(nvr_data: dict[str, Any], field: str) -> int | None:
-    """
-    Get storage bytes from NVR data, checking both direct and nested fields.
-
-    The API may return storage data in different formats:
-    - Direct: storageUsedBytes, storageTotalBytes
-    - Snake case: storage_used_bytes, storage_total_bytes
-    - Nested (library model): storageInfo.usedSize, storageInfo.totalSize
-    - Nested (snake_case): storageInfo.used_size, storageInfo.total_size
-    """
-    # Check direct camelCase fields. A zero-byte reading is legitimate (an
-    # empty NVR), so candidates are combined with first_not_none, not `or`.
-    if field == "used":
-        value = first_not_none(
-            nvr_data.get("storageUsedBytes"), nvr_data.get("storage_used_bytes")
-        )
-        if value is not None:
-            return int(value) if isinstance(value, (int, float)) else None
-        # Check nested storageInfo (library model uses usedSize/totalSize)
-        storage_info = nvr_data.get("storageInfo")
-        if isinstance(storage_info, dict):
-            nested_value = first_not_none(
-                storage_info.get("usedSize"),
-                storage_info.get("used_size"),
-                storage_info.get("usedSpaceBytes"),
-                storage_info.get("used_space_bytes"),
-            )
-            return int(nested_value) if isinstance(nested_value, (int, float)) else None
-    elif field == "total":
-        value = first_not_none(
-            nvr_data.get("storageTotalBytes"), nvr_data.get("storage_total_bytes")
-        )
-        if value is not None:
-            return int(value) if isinstance(value, (int, float)) else None
-        # Check nested storageInfo (library model uses usedSize/totalSize)
-        storage_info = nvr_data.get("storageInfo")
-        if isinstance(storage_info, dict):
-            nested_value = first_not_none(
-                storage_info.get("totalSize"),
-                storage_info.get("total_size"),
-                storage_info.get("totalSpaceBytes"),
-                storage_info.get("total_space_bytes"),
-            )
-            return int(nested_value) if isinstance(nested_value, (int, float)) else None
-    return None
+    """Read a validated byte signal from the shared normalizer."""
+    storage = normalize_nvr_storage(nvr_data)
+    return {
+        "used": storage.used_bytes,
+        "total": storage.total_bytes,
+        "available": storage.available_bytes,
+    }.get(field)
 
 
 def _calculate_storage_percent(nvr_data: dict[str, Any]) -> float | None:
-    """Calculate storage used percentage."""
-    used = _get_storage_bytes(nvr_data, "used")
-    total = _get_storage_bytes(nvr_data, "total")
-    if used is None or total is None or total == 0:
-        return None
-    result: float = round((used / total) * 100, 1)
-    return result
+    """Read the normalized percentage, including percentage-only telemetry."""
+    return normalize_nvr_storage(nvr_data).used_percent
 
 
 def _calculate_storage_available(nvr_data: dict[str, Any]) -> float | None:
-    """Calculate available storage in GB."""
-    used = _get_storage_bytes(nvr_data, "used")
-    total = _get_storage_bytes(nvr_data, "total")
-    if used is None or total is None:
-        return None
-    return _bytes_to_gb(total - used)
+    """Read available storage using the existing GB/base-2 conversion."""
+    return _bytes_to_gb(normalize_nvr_storage(nvr_data).available_bytes)
 
 
 # Sensor descriptions for UniFi Protect NVR
@@ -668,7 +612,7 @@ def _outlet_has_metering(outlet: dict[str, Any]) -> bool:
         try:
             if int(caps) & 2:
                 return True
-        except (TypeError, ValueError):
+        except (TypeError, ValueError):  # fmt: skip
             pass
     for key in (
         "outlet_power",
@@ -1138,14 +1082,14 @@ def _discover_port_sensors(
                         if pw is not None and float(pw) > 0:
                             poe_marker = True
                             break
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError):  # fmt: skip
                         pass
 
         if not poe_marker:
             norm = get_field(port, "poe_power_w")
             try:
                 poe_marker = norm is not None and float(norm) > 0
-            except (ValueError, TypeError):
+            except (ValueError, TypeError):  # fmt: skip
                 poe_marker = False
 
         if poe_marker:
@@ -1239,7 +1183,7 @@ def _create_port_stats_fallback(
             try:
                 if val is not None and float(val) <= 0:
                     continue
-            except (ValueError, TypeError):
+            except (ValueError, TypeError):  # fmt: skip
                 continue
             desc = PORT_SENSOR_TYPES[0]
             key = (site_id, device_id, port_idx, desc.key)
@@ -1301,7 +1245,7 @@ def _discover_outlet_sensors(
             continue
         try:
             outlet_idx = int(idx)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError):  # fmt: skip
             continue
 
         if not _outlet_has_metering(outlet):
@@ -1363,9 +1307,8 @@ def _discover_protect_sensors(
         for nvr_id, nvr_data in nvrs.items():
             if not isinstance(nvr_data, dict):
                 continue
-            has_storage = _has_storage_info(nvr_data)
             for nvr_desc in NVR_SENSOR_TYPES:
-                if nvr_desc.key.startswith("storage_") and not has_storage:
+                if nvr_desc.value_fn is None or nvr_desc.value_fn(nvr_data) is None:
                     continue
                 nvr_key = (nvr_id, nvr_desc.key)
                 if nvr_key not in known_sensor_keys:
@@ -1442,6 +1385,15 @@ async def async_setup_entry(
                         device_data,
                         known_sensor_keys,
                         entities,
+                    )
+                    entities.extend(
+                        discover_storage_sensors(
+                            coordinator,
+                            site_id,
+                            device_id,
+                            device_data,
+                            known_sensor_keys,
+                        )
                     )
 
         # Add site-level client count sensors
@@ -1522,6 +1474,7 @@ async def async_setup_entry(
         for entry in er.async_entries_for_config_entry(ent_reg, config_entry.entry_id)
         if entry.domain == "sensor"
         and "_port_" in entry.unique_id
+        and not is_storage_unique_id(entry.unique_id)
         and entry.unique_id not in created_uids
     ]
     for entry in stale:
@@ -2050,7 +2003,7 @@ class UnifiOutletSensor(UnifiInsightsEntity, SensorEntity):
                 try:
                     if int(idx) == self._outlet_index:
                         return outlet
-                except (TypeError, ValueError):
+                except (TypeError, ValueError):  # fmt: skip
                     continue
         return None
 
@@ -2229,24 +2182,14 @@ class UnifiProtectNVRSensor(UnifiProtectEntity, SensorEntity):
         if not nvr_data or not isinstance(nvr_data, dict):
             return False
 
-        # For storage sensors, check if storage data is available
-        if self.entity_description.key in [
-            "storage_used",
-            "storage_total",
-            "storage_available",
-            "storage_used_percent",
-        ]:
-            # Check both direct fields and nested storageInfo
-            storage_info = nvr_data.get("storageInfo")
-            has_direct = (
-                nvr_data.get("storageUsedBytes") is not None
-                or nvr_data.get("storageTotalBytes") is not None
-            )
-            has_nested = storage_info is not None and isinstance(storage_info, dict)
-            return has_direct or has_nested
-
-        # For other NVR sensors, just check if we have data
-        return True
+        if not self.entity_description.key.startswith("storage_"):
+            return True
+        value_fn = self.entity_description.value_fn
+        return (
+            nvr_data.get("state") not in ("DISCONNECTED", "DISCONNECTING")
+            and value_fn is not None
+            and value_fn(nvr_data) is not None
+        )
 
     @property
     def native_value(self) -> StateType:
@@ -2271,13 +2214,9 @@ class UnifiProtectNVRSensor(UnifiProtectEntity, SensorEntity):
         """Update entity from data."""
         nvr_data = self.coordinator.data["protect"]["nvrs"].get(self._device_id, {})
 
-        # Get storage values
-        storage_used = nvr_data.get("storageUsedBytes") or nvr_data.get(
-            "storage_used_bytes"
-        )
-        storage_total = nvr_data.get("storageTotalBytes") or nvr_data.get(
-            "storage_total_bytes"
-        )
+        storage = normalize_nvr_storage(nvr_data)
+        storage_used = storage.used_bytes
+        storage_total = storage.total_bytes
 
         # Set attributes
         self._attr_extra_state_attributes = {

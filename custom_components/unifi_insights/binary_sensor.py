@@ -34,6 +34,7 @@ from .const import (
     ATTR_SENSOR_TAMPER_DETECTED,
     ATTR_SENSOR_TAMPER_DETECTED_AT,
     DEVICE_TYPE_CAMERA,
+    DEVICE_TYPE_NVR,
     DEVICE_TYPE_SENSOR,
     SMART_DETECT_ANIMAL,
     SMART_DETECT_PACKAGE,
@@ -50,6 +51,8 @@ from .entity import (
 from .helpers import is_doorbell_camera_model
 from .mobility_entity import async_setup_mobility_binary_sensors
 from .protect_security_entity import discover_protect_security_binary_sensors
+from .storage_entity import discover_storage_binary_sensors
+from .storage_telemetry import normalize_nvr_storage
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -218,13 +221,33 @@ def _is_external_leak_detected(sensor_data: dict[str, Any]) -> bool:
 class UnifiInsightsBinarySensorEntityDescription(BinarySensorEntityDescription):  # type: ignore[misc]
     """Class describing UniFi Insights binary sensor entities."""
 
-    value_fn: Callable[[dict[str, Any]], bool] | None = None
+    value_fn: Callable[[dict[str, Any]], bool | None] | None = None
     device_type: str | None = None
     entity_type: str = "device"  # "device" or "protect"
     capability_fn: Callable[[dict[str, Any]], bool] | None = None
 
 
 BINARY_SENSOR_TYPES: tuple[UnifiInsightsBinarySensorEntityDescription, ...] = (
+    UnifiInsightsBinarySensorEntityDescription(
+        key="storage_degraded",
+        translation_key="storage_degraded",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: normalize_nvr_storage(data).degraded,
+        device_type=DEVICE_TYPE_NVR,
+        entity_type="protect",
+        capability_fn=lambda data: normalize_nvr_storage(data).degraded is not None,
+    ),
+    UnifiInsightsBinarySensorEntityDescription(
+        key="storage_nearly_full",
+        translation_key="storage_nearly_full",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: normalize_nvr_storage(data).nearly_full,
+        device_type=DEVICE_TYPE_NVR,
+        entity_type="protect",
+        capability_fn=lambda data: normalize_nvr_storage(data).nearly_full is not None,
+    ),
     # Network device status
     UnifiInsightsBinarySensorEntityDescription(
         key="device_status",
@@ -314,12 +337,10 @@ BINARY_SENSOR_TYPES: tuple[UnifiInsightsBinarySensorEntityDescription, ...] = (
         entity_type="protect",
         entity_category=EntityCategory.DIAGNOSTIC,
         capability_fn=_camera_has_mic,
-        value_fn=lambda device: (
-            bool(
-                device.get("isMicEnabled")
-                if device.get("isMicEnabled") is not None
-                else device.get("micEnabled", False)
-            )
+        value_fn=lambda device: bool(
+            device.get("isMicEnabled")
+            if device.get("isMicEnabled") is not None
+            else device.get("micEnabled", False)
         ),
     ),
     # Sensor motion detection
@@ -521,6 +542,16 @@ async def async_setup_entry(
                                 )
                             )
 
+                    entities.extend(
+                        discover_storage_binary_sensors(
+                            coordinator,
+                            site_id,
+                            device_id,
+                            device_data,
+                            known_sensor_keys,
+                        )
+                    )
+
                     # Site-to-site VPN tunnels, one sensor each, on the gateway.
                     # Devices reporting WAN links route traffic even when their
                     # model/features are not recognised.
@@ -637,6 +668,30 @@ async def async_setup_entry(
                                         device_id=sensor_id,
                                     )
                                 )
+
+        if coordinator.protect_client and isinstance(coordinator.data, dict):
+            protect = coordinator.data.get("protect", {})
+            nvrs = protect.get("nvrs", {}) if isinstance(protect, dict) else {}
+            if isinstance(nvrs, dict):
+                for nvr_id, nvr_data in nvrs.items():
+                    if not isinstance(nvr_data, dict):
+                        continue
+                    for description in BINARY_SENSOR_TYPES:
+                        if (
+                            description.device_type != DEVICE_TYPE_NVR
+                            or description.capability_fn is None
+                            or not description.capability_fn(nvr_data)
+                        ):
+                            continue
+                        nvr_key = (nvr_id, description.key)
+                        if nvr_key in known_sensor_keys:
+                            continue
+                        known_sensor_keys.add(nvr_key)
+                        entities.append(
+                            UnifiInsightsNVRStorageBinarySensor(
+                                coordinator, description, nvr_id
+                            )
+                        )
 
         # Add Protect alarm hub, link station and fob binary sensors
         entities.extend(
@@ -791,6 +846,22 @@ class UnifiProtectBinarySensor(UnifiProtectEntity, BinarySensorEntity):
                     "externalLeakDetectedAt", 0
                 ),
             }
+
+
+class UnifiInsightsNVRStorageBinarySensor(UnifiProtectBinarySensor):
+    """Conditional NVR problems; missing telemetry stays unavailable."""
+
+    @property
+    def available(self) -> bool:
+        """NVRs have no required state field; gate on each explicit signal."""
+        data = self.device_data
+        return (
+            self.coordinator.protect_available
+            and data is not None
+            and bool(data)
+            and data.get("state") not in ("DISCONNECTED", "DISCONNECTING")
+            and self.is_on is not None
+        )
 
 
 class UnifiPortBinarySensor(UnifiInsightsEntity, BinarySensorEntity):

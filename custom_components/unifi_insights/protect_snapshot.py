@@ -13,9 +13,9 @@ from .dashboard_contract_utils import (
     is_protect_device_connected,
     utc_iso,
 )
+from .storage_telemetry import normalize_nvr_storage
 
 LOW_BATTERY_PCT = 20
-NEARLY_FULL_PCT = 90
 
 
 def _site_from_mac(data: dict[str, Any], mac: str | None) -> str | None:
@@ -173,22 +173,10 @@ def build_protect_snapshot(
     for nvr in nvrs.values():
         if not isinstance(nvr, dict):
             continue
-        storage = nvr.get("storage")
-        if not isinstance(storage, dict):
-            continue
-        healthy = storage.get("healthy")
-        if healthy is False:
+        storage = normalize_nvr_storage(nvr)
+        if storage.degraded is True:
             storage_unhealthy = True
-        used_pct = storage.get("used")
-        used: float | None
-        if used_pct is None:
-            used = None
-        else:
-            try:
-                used = float(used_pct)
-            except (TypeError, ValueError):  # fmt: skip
-                used = None
-        if used is not None and used >= NEARLY_FULL_PCT:
+        if storage.nearly_full is True:
             storage_nearly_full = True
 
     if storage_unhealthy:

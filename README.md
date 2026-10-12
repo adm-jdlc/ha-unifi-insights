@@ -110,6 +110,7 @@ Carrier Fabric entries have their own options. See [Carrier Fabric setup](#carri
 - **Device health:** status, CPU, memory, uptime, temperature and uplink rates for gateways, switches and access points.
 - **Ports:** PoE power, link speed, traffic counters and rates, and SFP module details.
 - **Power:** PDU outlet switches with power, voltage, current and power factor, and AC power consumption and budget.
+- **Storage:** used percentage, used space and total space for each filesystem a console reports (for example eMMC and backup storage on a UDM Pro SE), and a Storage Nearly Full alert. Per-drive SMART, temperature, RAID and Drive/UNAS data require supported API fields. Protect NVR aggregate diagnostics are conditional on reported storage fields; the current official `/v1/nvrs` response lacks them.
 - **Internet and WAN:** gateway and per-WAN connection status, WAN IP address, site-to-site VPN tunnel status, and internet download and upload totals for the last hour, day, week and month.
 - **Clients:** client counts per site, device and Wi-Fi network; optional presence tracking; allow/block switches and reconnect buttons, and Wake-on-LAN buttons for wired clients.
 - **Controls:** switches for Wi-Fi networks, firewall policies, policy-based routes, VPN clients, port forwards and traffic rules; device restart buttons; QR code images to join each Wi-Fi network.
@@ -133,6 +134,9 @@ Carrier Fabric entries have their own options. See [Carrier Fabric setup](#carri
 | _Port_ SFP Module, SFP Vendor, SFP Type, SFP Serial | Sensor         | Per SFP port, disabled by default                                                      |
 | _Port_ SFP Module                                   | Binary sensor  | On when an SFP module is inserted                                                      |
 | AC Power Consumption, AC Power Budget               | Sensor         | Devices that report power                                                              |
+| Storage _mount_ Used Percentage                     | Sensor         | Consoles that report storage, per filesystem (%). /tmp-style mounts start disabled     |
+| Storage _mount_ Used, Storage _mount_ Total         | Sensor         | Per filesystem (GiB), disabled by default                                              |
+| Storage Nearly Full                                 | Binary sensor  | On when a persistent filesystem is 90% full or more                                    |
 | _Outlet name_ Power, Voltage, Current, Power Factor | Sensor         | Per PDU outlet                                                                         |
 | WAN Status                                          | Binary sensor  | Gateway online state (for the link state, use the WAN connection)                      |
 | _WAN name_ Connection                               | Binary sensor  | Internet connection state of each WAN (DHCP, static or PPPoE)                          |
@@ -268,7 +272,7 @@ data:
 - **Sirens:** sound a siren for 5, 10, 20 or 30 seconds, and set its volume.
 - **PTZ:** move to a preset, and start or stop a patrol.
 - **Sensors:** temperature, humidity, light level, battery, motion, door/window, tamper and leak.
-- **NVR:** storage used, total and available, when the console reports it.
+- **NVR:** storage used, total, available and percentage, plus diagnostic Storage degraded and Storage nearly full alerts, when the existing Protect data supplies each signal. Missing health or capacity stays unavailable; no extra requests are made. The current official `/v1/nvrs` response does not expose storage, so these entities are conditional compatibility support, not guaranteed telemetry. Per-drive SMART, temperature, RAID and Drive/UNAS monitoring require supported API fields. Nearly full uses the displayed one-decimal percentage at 90% or more, matching console mounts.
 - **Alarm Manager:** an alarm control panel to arm (away) and disarm the Protect alarm, when the NVR reports an arm mode.
 - **Security devices:** alarm hub tamper detection, plus Thread network status for Thread gateways and read-only keypad fob settings (both need Protect 7.3.70 or newer). These devices are read-only: the Protect API only allows integrations to rename them.
 - **Live views:** create live views and choose the live view on a viewer.

@@ -1678,9 +1678,26 @@ class TestHasStorageInfo:
         assert _has_storage_info({"storageInfo": "not a dict"}) is False
         assert _has_storage_info({"storageInfo": None}) is False
 
+    def test_has_storage_info_with_percentage_only(self):
+        """Test _has_storage_info when the NVR reports only a used percentage."""
+        assert _has_storage_info({"storage": {"used": 42}}) is True
+        assert _calculate_storage_percent({"storage": {"used": 42}}) == 42.0
+
+    def test_has_storage_info_with_available_only(self):
+        """Test _has_storage_info when the NVR reports only available bytes."""
+        assert _has_storage_info({"storageAvailableBytes": 500}) is True
+        assert _has_storage_info({"storageInfo": {"availableSize": 500}}) is True
+
 
 class TestGetStorageBytes:
     """Tests for _get_storage_bytes helper function."""
+
+    def test_get_storage_bytes_available_explicit(self):
+        """Test _get_storage_bytes prefers a reported available value."""
+        data = {"storageInfo": {"usedSize": 50, "totalSize": 100, "availableSize": 30}}
+        assert _get_storage_bytes(data, "available") == 30
+        assert _get_storage_bytes({"storageAvailableBytes": 500}, "available") == 500
+        assert _get_storage_bytes(data, "unknown") is None
 
     def test_get_storage_bytes_used_direct(self):
         """Test _get_storage_bytes for 'used' with direct fields."""
@@ -4270,3 +4287,43 @@ class TestSensorAdditionalCoverageGaps:
         for listener in listeners:
             listener()
         assert len(added_entities) == count_before
+
+    @pytest.mark.asyncio
+    async def test_stale_port_cleanup_keeps_storage_rows_with_port_in_path(
+        self, hass: HomeAssistant, mock_config_entry: MagicMock
+    ) -> None:
+        """A storage row whose mount path contains "_port_" is not a stale port."""
+        coordinator = MagicMock()
+        coordinator.data = {"devices": {"site1": {}}, "clients": {"site1": {}}}
+        coordinator.protect_client = None
+        coordinator.async_add_listener = MagicMock()
+        mock_config_entry.runtime_data = MagicMock(
+            coordinator=coordinator, mobility_coordinator=None
+        )
+
+        stale_port = MagicMock(
+            domain="sensor",
+            unique_id="site1_device1_port_99_speed",
+            entity_id="sensor.stale_port",
+        )
+        storage_row = MagicMock(
+            domain="sensor",
+            unique_id="site1_device1_storage_/mnt/usb_port_1_used_percent",
+            entity_id="sensor.usb_storage_used",
+        )
+        mock_reg = MagicMock()
+
+        with (
+            patch(
+                "custom_components.unifi_insights.sensor.er.async_get",
+                return_value=mock_reg,
+            ),
+            patch(
+                "custom_components.unifi_insights.sensor.er.async_entries_for_config_entry",
+                return_value=[stale_port, storage_row],
+            ),
+        ):
+            await async_setup_entry(hass, mock_config_entry, MagicMock())
+
+        removed = [call.args[0] for call in mock_reg.async_remove.call_args_list]
+        assert removed == ["sensor.stale_port"]
