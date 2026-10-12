@@ -28,6 +28,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import site_internet_activity_sensor
 from .console_identity import resolve_console_namespace
 from .const import (
     ATTR_NVR_ID,
@@ -69,15 +70,6 @@ from .innerspace_entity import (
 from .mobility_entity import async_setup_mobility_sensors
 from .protect_security_entity import discover_protect_security_sensors
 from .site_internet_activity_sensor import (
-    SITE_INTERNET_ACTIVITY_SENSOR_TYPES as SITE_INTERNET_ACTIVITY_SENSOR_TYPES,
-)
-from .site_internet_activity_sensor import (
-    UnifiSiteInternetActivitySensor as UnifiSiteInternetActivitySensor,
-)
-from .site_internet_activity_sensor import (
-    UnifiSiteInternetActivitySensorEntityDescription as UnifiSiteInternetActivitySensorEntityDescription,
-)
-from .site_internet_activity_sensor import (
     _discover_site_internet_activity_sensors,
 )
 from .storage_entity import discover_storage_sensors, is_storage_unique_id
@@ -98,6 +90,17 @@ from homeassistant.helpers.entity import DeviceInfo
 
 from .carrier_fabric_data import CarrierFabricData
 from .carrier_fabric_sensor import async_setup_carrier_fabric_sensors
+
+# Preserve these public sensor-module exports without redundant import aliases.
+SITE_INTERNET_ACTIVITY_SENSOR_TYPES = (
+    site_internet_activity_sensor.SITE_INTERNET_ACTIVITY_SENSOR_TYPES
+)
+UnifiSiteInternetActivitySensor = (
+    site_internet_activity_sensor.UnifiSiteInternetActivitySensor
+)
+UnifiSiteInternetActivitySensorEntityDescription = (
+    site_internet_activity_sensor.UnifiSiteInternetActivitySensorEntityDescription
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1324,6 +1327,49 @@ def _discover_protect_sensors(
                     )
 
 
+def _is_owned_port_sensor(
+    entity: er.RegistryEntry,
+    config_entry_id: str,
+    known_device_ids: set[str],
+) -> bool:
+    """
+    Recognize physical port rows using the constructor's identity and ownership.
+
+    Matching description metadata also identifies ports of removed devices.
+    Without that metadata, require a device from the current API inventory;
+    incompatible or otherwise ambiguous rows are retained. Namespace, site,
+    and storage-path text containing ``_port_`` never establishes port identity.
+    """
+    if (
+        entity.domain != "sensor"
+        or entity.platform != DOMAIN
+        or entity.config_entry_id != config_entry_id
+        or is_storage_unique_id(entity.unique_id)
+    ):
+        return False
+    prefix, separator, port_idx = entity.unique_id.rpartition("_")
+    try:
+        if not separator or str(int(port_idx)) != port_idx:
+            return False
+    except ValueError:
+        return False
+    for description in (
+        *PORT_SENSOR_TYPES,
+        *PORT_RATE_SENSOR_TYPES,
+        *SFP_SENSOR_TYPES,
+    ):
+        ending = f"_{description.key}"
+        if not prefix.endswith(ending):
+            continue
+        device_id = prefix[: -len(ending)]
+        if not device_id:
+            return False
+        return entity.translation_key == description.translation_key or (
+            entity.translation_key in (None, "") and device_id in known_device_ids
+        )
+    return False
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: UnifiInsightsConfigEntry | CarrierFabricConfigEntry,
@@ -1495,14 +1541,30 @@ async def async_setup_entry(
 
     # Clean up stale port entities from previous runs
     created_uids = {getattr(e, "unique_id", None) for e in initial_entities}
+    devices_by_site = (
+        coordinator.data.get("devices", {})
+        if isinstance(coordinator.data, dict)
+        else {}
+    )
+    known_device_ids = (
+        {
+            device_id
+            for devices in devices_by_site.values()
+            if isinstance(devices, dict)
+            for device_id, device_data in devices.items()
+            if isinstance(device_id, str)
+            and device_id
+            and isinstance(device_data, dict)
+        }
+        if isinstance(devices_by_site, dict)
+        else set()
+    )
     ent_reg = er.async_get(hass)
     stale = [
         entry
         for entry in er.async_entries_for_config_entry(ent_reg, config_entry.entry_id)
-        if entry.domain == "sensor"
-        and "_port_" in entry.unique_id
-        and not is_storage_unique_id(entry.unique_id)
-        and entry.unique_id not in created_uids
+        if entry.unique_id not in created_uids
+        and _is_owned_port_sensor(entry, config_entry.entry_id, known_device_ids)
     ]
     for entry in stale:
         _LOGGER.debug("Removing stale port sensor entity: %s", entry.unique_id)

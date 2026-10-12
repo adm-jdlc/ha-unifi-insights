@@ -1024,18 +1024,16 @@ async def test_flow_stops_scanning_once_the_console_is_found(
     assert net_client.devices.get_all.await_count == 1
 
 
-async def test_flow_and_setup_agree_on_a_default_first_site(
+async def test_no_mac_flow_uses_host_when_default_site_comes_first(
     hass: HomeAssistant,
 ) -> None:
-    """Both paths skip the "default" site id and pick the same next one.
+    """Keep console identity independent of default and non-default site IDs.
 
-    ``Site.id`` is synthesized from ``internalReference``, so a controller can
-    genuinely report "default" first. The flow used to fall back to the host
-    here while ``_first_site_id`` skipped ahead to the next site, which is the
-    disagreement this shares a rule to prevent.
+    The site-order utility still returns the first non-default site, while
+    the configuration flow uses the actual host when no console MAC is found.
     """
     # No stored identity: a stored one would rightly take precedence over a
-    # freshly derived site id, which would hide what the flow derived.
+    # freshly derived host, which would hide what the flow derived.
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id=None,
@@ -1048,7 +1046,7 @@ async def test_flow_and_setup_agree_on_a_default_first_site(
     )
     entry.add_to_hass(hass)
 
-    # No console among the devices, so identity falls back to a site id.
+    # No console among the devices, so identity falls back to the actual host.
     net_cm, _ = _make_mock_client(
         sites=[
             MagicMock(id="default", name="Default"),
@@ -1084,9 +1082,8 @@ async def test_flow_and_setup_agree_on_a_default_first_site(
         )
         await hass.async_block_till_done()
 
-    # The flow picked the first non-default site, not the host...
-    assert entry.data[CONF_CONSOLE_ID] == "site-b"
-    # ...which is exactly what setup derives from the same site order.
+    assert entry.data[CONF_CONSOLE_ID] == "https://192.168.1.1"
+    # Inventory ordering remains available without establishing identity.
     coordinator = MagicMock()
     coordinator.data = {"sites": {"default": {}, "site-b": {}}}
     assert _first_site_id(coordinator) == "site-b"
@@ -1342,7 +1339,7 @@ async def test_console_identity_extra_coverage_branches(
     coord.data = {"sites": "not_a_dict"}
     assert _first_site_id(coord) is None
 
-    # 2. Local setup fallback to site_id and host, plus non-dict site devices handling
+    # 2. Local setup uses the host, with non-dict site devices handled defensively.
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="UniFi Insights (Local)",
@@ -1410,8 +1407,8 @@ async def test_console_identity_extra_coverage_branches(
         entry.mock_state(hass, config_entries.ConfigEntryState.LOADED)
         res = await async_setup_entry(hass, entry)
         assert res is True
-        assert entry.data.get(CONF_CONSOLE_ID) == "my_custom_site"
-        assert entry.unique_id == "my_custom_site"
+        assert entry.data.get(CONF_CONSOLE_ID) == "192.168.1.100"
+        assert entry.unique_id == "192.168.1.100"
         await hass.config_entries.async_unload(entry.entry_id)
 
     # 3. Protect coordinator methods when client is None or timers already stopped
@@ -1541,7 +1538,7 @@ async def test_console_identity_final_branch_coverage(
     p_coord._start_sensor_reconcile_timer()
     assert p_coord._unsub_sensor_reconcile is not None
 
-    # 2. Local flow probe network fallback to custom site id and site name
+    # 2. Local flow retains the site name but uses the host as its fallback ID.
     net_cm, _ = _make_mock_client(
         sites=[MagicMock(id="custom_site_beta", name="Beta Site")],
         devices=[],
@@ -1570,7 +1567,7 @@ async def test_console_identity_final_branch_coverage(
             },
         )
         assert result["type"] == FlowResultType.CREATE_ENTRY
-        assert result["result"].unique_id == "custom_site_beta"
+        assert result["result"].unique_id == "https://192.168.1.15"
 
     # 3. Local flow probe protect NVR inspect exception handling
     net_cm_err, net_client_err = _make_mock_client()
@@ -1744,9 +1741,9 @@ async def test_async_setup_entry_handles_malformed_coordinator_data(
         res = await async_setup_entry(hass, entry)
         assert res is True
         # Neither the NVR nor the device payload yielded a usable mac, so
-        # identity falls back to the config coordinator's site id.
-        assert entry.data.get(CONF_CONSOLE_ID) == "site_xyz"
-        assert entry.unique_id == "site_xyz"
+        # identity falls back to the explicit console host.
+        assert entry.data.get(CONF_CONSOLE_ID) == "192.168.1.50"
+        assert entry.unique_id == "192.168.1.50"
         await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -1951,6 +1948,76 @@ async def test_async_setup_entry_backfills_credential_identity_when_no_mac_found
         await hass.config_entries.async_unload(entry.entry_id)
 
 
+@pytest.mark.parametrize("source", ["user", "reconfigure"])
+async def test_local_no_mac_flow_keeps_shared_site_consoles_distinct(
+    hass: HomeAssistant, source: str
+) -> None:
+    """Use distinct actual hosts for initial and legacy reconfiguration flows."""
+    identities = []
+    for index in ("a", "b"):
+        host = f"https://Console{index.upper()}.Example.Invalid"
+        context = {"source": source}
+        if source == "reconfigure":
+            stored_key = f"synthetic_old_key_{index}"
+            entry = MockConfigEntry(
+                domain=DOMAIN,
+                data={
+                    CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+                    CONF_CONSOLE_ID: stored_key,
+                    CONF_API_KEY: stored_key,
+                    CONF_HOST: host,
+                },
+                unique_id=stored_key,
+            )
+            entry.add_to_hass(hass)
+            context["entry_id"] = entry.entry_id
+        network, _ = _make_mock_client(
+            sites=[MagicMock(id="site_shared", name="Synthetic site")],
+            devices=[],
+        )
+        with (
+            patch(
+                "custom_components.unifi_insights.config_flow.UniFiNetworkClient",
+                return_value=network,
+            ),
+            patch("custom_components.unifi_insights.config_flow.LocalAuth"),
+            patch(
+                "custom_components.unifi_insights.async_setup_entry", return_value=True
+            ),
+            patch(
+                "custom_components.unifi_insights.async_migrate_entry",
+                return_value=True,
+            ),
+        ):
+            result = await hass.config_entries.flow.async_init(DOMAIN, context=context)
+            if source == "user":
+                result = await hass.config_entries.flow.async_configure(
+                    result["flow_id"],
+                    user_input={CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL},
+                )
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"],
+                user_input={
+                    CONF_HOST: host,
+                    CONF_API_KEY: f"synthetic_new_key_{index}",
+                    CONF_VERIFY_SSL: False,
+                },
+            )
+            await hass.async_block_till_done()
+        if source == "user":
+            assert result["type"] == FlowResultType.CREATE_ENTRY
+            identities.append(result["result"].unique_id)
+        else:
+            assert result["type"] == FlowResultType.ABORT
+            assert result["reason"] == "reconfigure_successful"
+            assert entry.data[CONF_CONSOLE_ID] == entry.unique_id
+            identities.append(entry.unique_id)
+    assert identities == [
+        "https://consolea.example.invalid",
+        "https://consoleb.example.invalid",
+    ]
+
+
 async def test_migration_skips_v1_block_below_version_one(
     hass: HomeAssistant,
 ) -> None:
@@ -2029,8 +2096,8 @@ async def test_local_flow_device_scan_skips_non_console_and_captures_name(
         )
         assert result["type"] == FlowResultType.CREATE_ENTRY
         # The switch was skipped; the Dream Machine matched by model but
-        # exposed no mac, so identity falls back to the site id.
-        assert result["result"].unique_id == "site_gamma"
+        # exposed no mac, so identity falls back to the explicit console host.
+        assert result["result"].unique_id == "https://192.168.1.60"
         assert result["data"].get(CONF_CONSOLE_ID) is None
 
 

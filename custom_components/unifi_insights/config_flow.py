@@ -42,7 +42,6 @@ from .api.protect import UniFiProtectClient
 from .console_identity import (
     DEFAULT_SITE_ID,
     device_fields,
-    first_non_default_site_id,
     normalize_console_namespace,
     normalize_mac,
     resolve_console_identity,
@@ -264,11 +263,11 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                         break
 
                 if "id" not in console_info:
-                    # Same ordering rule setup applies, so both derive the
-                    # same identity instead of drifting apart.
-                    console_info["id"] = (
-                        first_non_default_site_id(site_ids) or host.lower()
-                    )
+                    # A shared site cannot identify a console. Match setup's
+                    # explicit local-endpoint fallback when no MAC is available.
+                    host_id = normalize_console_namespace(host, credentials=(api_key,))
+                    if host_id:
+                        console_info["id"] = host_id
                     site_name = getattr(res.sites[0], "name", None)
                     if type(site_name) is str:
                         console_info["name"] = site_name
@@ -810,13 +809,22 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                         verify_ssl=reauth_entry.data.get(CONF_VERIFY_SSL, False),
                     )
                     if is_valid:
+                        console_id = normalize_console_namespace(
+                            reauth_entry.data.get(CONF_CONSOLE_ID),
+                            credentials=(reauth_entry.data.get(CONF_API_KEY),),
+                        )
+                        new_data = {
+                            **reauth_entry.data,
+                            CONF_API_KEY: user_input[CONF_API_KEY],
+                        }
+                        if console_id is None:
+                            # Do not promote the old credential to a namespace
+                            # after rotation. Setup will discover a safe ID.
+                            new_data.pop(CONF_CONSOLE_ID, None)
                         return self._async_update_site_entry_and_abort(
                             reauth_entry,
-                            {
-                                **reauth_entry.data,
-                                CONF_API_KEY: user_input[CONF_API_KEY],
-                            },
-                            reauth_entry.data.get(CONF_CONSOLE_ID),
+                            new_data,
+                            console_id,
                         )
                     if error_code == "invalid_auth":
                         errors[CONF_API_KEY] = "invalid_auth"

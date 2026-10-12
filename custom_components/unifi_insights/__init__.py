@@ -31,6 +31,7 @@ from .carrier_fabric_data import (
 from .console_identity import (
     first_non_default_site_id,
     is_console_device,
+    normalize_console_namespace,
     normalize_mac,
     resolve_console_identity,
 )
@@ -297,7 +298,7 @@ _is_console_device = is_console_device
 
 
 def _first_site_id(config_coordinator: UnifiConfigCoordinator) -> str | None:
-    """Return a stable site id to identify a console that exposes no gateway."""
+    """Return the first non-default site ID in coordinator API order."""
     data = getattr(config_coordinator, "data", None)
     if not isinstance(data, dict):
         return None
@@ -593,17 +594,25 @@ async def async_setup_entry(
             if not console_name:
                 console_name = found_name
 
-    if is_local and (not console_id or console_id == entry.data.get(CONF_API_KEY)):
+    if (
+        is_local
+        and normalize_console_namespace(
+            console_id, credentials=(entry.data.get(CONF_API_KEY),)
+        )
+        is None
+    ):
+        console_mac = normalize_console_namespace(
+            console_mac, credentials=(entry.data.get(CONF_API_KEY),)
+        )
         if console_mac:
             console_id = console_mac
         else:
-            # The host is an address, not an identity: it changes on a DHCP
-            # renew, which is the problem this separation exists to fix. Fall
-            # back to the site id first and keep the host as a last resort,
-            # matching the order the config flow already uses.
-            console_id = (
-                _first_site_id(config_coordinator)
-                or entry.data.get(CONF_HOST, "local").lower()
+            # A site ID may be shared across consoles. Use the actual local
+            # endpoint until hardware identity is available; without a safe
+            # endpoint, retain legacy rows and defer namespaced discovery.
+            console_id = normalize_console_namespace(
+                entry.data.get(CONF_HOST),
+                credentials=(entry.data.get(CONF_API_KEY),),
             )
 
     updates: dict[str, Any] = {}

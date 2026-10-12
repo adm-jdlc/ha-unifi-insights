@@ -62,7 +62,7 @@ async def test_setup_entry_success(
 @pytest.mark.parametrize(
     ("site_id", "expected_identity"),
     [
-        ("synthetic_site", "synthetic_site"),
+        ("synthetic_site", "https://console.example.invalid"),
         ("default", "https://console.example.invalid"),
     ],
 )

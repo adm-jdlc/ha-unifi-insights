@@ -155,11 +155,10 @@ def resolve_console_identity(
 
 def first_non_default_site_id(site_ids: Iterable[Any]) -> str | None:
     """
-    Return the first site id that can actually identify a console.
+    Return the first non-default site ID in the supplied API order.
 
-    Order is the caller's: the API's site order, which both the probe result
-    list and the coordinator's site mapping preserve. ``"default"`` is skipped
-    because every controller reports it.
+    Site IDs can be shared across consoles and do not establish console
+    identity. ``"default"`` is skipped because every controller reports it.
     """
     for site_id in site_ids:
         if isinstance(site_id, str) and site_id and site_id != DEFAULT_SITE_ID:

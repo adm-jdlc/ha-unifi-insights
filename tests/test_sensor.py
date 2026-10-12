@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Ruaan Deysel
 """Tests for UniFi Insights sensors."""
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,14 +15,27 @@ from homeassistant.const import (
     UnitOfInformation,
     UnitOfTemperature,
 )
+from homeassistant.helpers.entity_registry import (
+    RegistryEntryDisabler,
+    RegistryEntryHider,
+)
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 if TYPE_CHECKING:
+    from homeassistant.components.sensor import SensorEntity
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers import entity_registry as er
 
+    from custom_components.unifi_insights.sensor import (
+        UnifiInsightsSensorEntityDescription,
+    )
+    from custom_components.unifi_insights.storage_entity import (
+        UnifiStorageSensorEntityDescription,
+    )
+
 from custom_components.unifi_insights.const import (
     CONF_CONNECTION_TYPE,
+    CONF_CONSOLE_ID,
     CONNECTION_TYPE_LOCAL,
     DOMAIN,
 )
@@ -66,6 +80,10 @@ from custom_components.unifi_insights.sensor import (
     bytes_to_megabits,
     format_uptime,
     get_network_device_temperature,
+)
+from custom_components.unifi_insights.storage_entity import (
+    STORAGE_SENSOR_TYPES,
+    UnifiStorageSensor,
 )
 from custom_components.unifi_insights.voucher_sensor import UnifiVoucherSensor
 from tests.fixtures.library_responses import (
@@ -4280,7 +4298,10 @@ class TestSensorAdditionalCoverageGaps:
 
         mock_stale = MagicMock(
             domain="sensor",
-            unique_id="site1_device1_port_99_speed",
+            platform=DOMAIN,
+            config_entry_id=mock_config_entry.entry_id,
+            translation_key="port_speed",
+            unique_id="device1_port_speed_99",
             entity_id="sensor.stale_port",
         )
         mock_reg = MagicMock()
@@ -4370,7 +4391,10 @@ class TestSensorAdditionalCoverageGaps:
 
         stale_port = MagicMock(
             domain="sensor",
-            unique_id="site1_device1_port_99_speed",
+            platform=DOMAIN,
+            config_entry_id=mock_config_entry.entry_id,
+            translation_key="port_speed",
+            unique_id="device1_port_speed_99",
             entity_id="sensor.stale_port",
         )
         storage_row = MagicMock(
@@ -4394,3 +4418,287 @@ class TestSensorAdditionalCoverageGaps:
 
         removed = [call.args[0] for call in mock_reg.async_remove.call_args_list]
         assert removed == ["sensor.stale_port"]
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+class TestStalePortCleanupNativeRegistry:
+    """Preserve ownership and logical rows during native physical-port cleanup."""
+
+    @pytest.fixture
+    def mock_config_entry(self) -> MockConfigEntry:
+        """Use a real synthetic config entry instead of this module's mock fixture."""
+        return MockConfigEntry(
+            domain=DOMAIN,
+            entry_id="synthetic_cleanup_entry",
+            unique_id="console_a",
+            data={
+                CONF_CONSOLE_ID: "console_a",
+                CONF_API_KEY: "synthetic_credential",
+            },
+        )
+
+    @pytest.fixture
+    def cleanup_coordinator(
+        self,
+        hass: HomeAssistant,
+        mock_coordinator: MagicMock,
+        mock_config_entry: MockConfigEntry,
+    ) -> MagicMock:
+        """Set up a registered entry with one device and no active port readings."""
+        mock_config_entry.add_to_hass(hass)
+        mock_coordinator.protect_client = None
+        mock_coordinator.data = {
+            "sites": {"site1": {"id": "site1"}},
+            "devices": {
+                "site1": {
+                    "device1": {
+                        "name": "Synthetic switch",
+                        "state": "ONLINE",
+                        "ports": [],
+                    }
+                }
+            },
+            "clients": {},
+            "vouchers": {},
+            "internet_activity": {},
+        }
+        mock_coordinator.async_add_listener.return_value = lambda: None
+        mock_config_entry.runtime_data = SimpleNamespace(
+            coordinator=mock_coordinator, mobility_coordinator=None
+        )
+        return mock_coordinator
+
+    @pytest.mark.parametrize(
+        ("namespace", "site_id"),
+        [
+            ("console_port_a", "site_shared"),
+            ("console_a", "site_port_shared"),
+        ],
+    )
+    @pytest.mark.parametrize("translation_key", [None, "incompatible_key"])
+    async def test_skipped_logical_rows_survive_port_cleanup(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        namespace: str,
+        site_id: str,
+        translation_key: str | None,
+    ) -> None:
+        """Keep skipped logical rows when namespace or site text contains _port_."""
+        hass.config_entries.async_update_entry(
+            mock_config_entry,
+            data={**mock_config_entry.data, CONF_CONSOLE_ID: namespace},
+        )
+        cleanup_coordinator.data["sites"] = {site_id: {"id": site_id}}
+        cleanup_coordinator.data["clients"] = {site_id: {}}
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            f"{namespace}_{site_id}_site_total_clients",
+            config_entry=mock_config_entry,
+            translation_key=translation_key,
+        )
+        row = entity_registry.async_update_entity(
+            row.entity_id,
+            name="Custom logical sensor",
+            disabled_by=RegistryEntryDisabler.USER,
+            hidden_by=RegistryEntryHider.USER,
+        )
+        added: list[SensorEntity] = []
+        await async_setup_entry(hass, mock_config_entry, added.extend)
+        assert row.unique_id not in {entity.unique_id for entity in added}
+        assert entity_registry.async_get(row.entity_id) == row
+
+    @pytest.mark.parametrize(
+        "description",
+        [*PORT_SENSOR_TYPES, *PORT_RATE_SENSOR_TYPES, *SFP_SENSOR_TYPES],
+        ids=lambda description: description.key,
+    )
+    async def test_removed_device_ports_still_clean_up(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        description: UnifiInsightsSensorEntityDescription,
+    ) -> None:
+        """Clean up every actual port family even after its device is removed."""
+        port = UnifiPortSensor(
+            cleanup_coordinator, description, "site1", "device1", port_idx=99
+        )
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            port.unique_id,
+            config_entry=mock_config_entry,
+            translation_key=port.translation_key,
+        )
+        cleanup_coordinator.data["devices"] = {}
+        await async_setup_entry(hass, mock_config_entry, MagicMock())
+        assert entity_registry.async_get(row.entity_id) is None
+
+    @pytest.mark.parametrize(
+        ("translation_key", "device_present", "removed"),
+        [
+            (None, True, True),
+            ("", True, True),
+            (None, False, False),
+            ("incompatible_key", True, False),
+        ],
+    )
+    async def test_missing_port_metadata_requires_current_device_evidence(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        translation_key: str | None,
+        *,
+        device_present: bool,
+        removed: bool,
+    ) -> None:
+        """Retain ambiguous rows while cleaning known-device ports without metadata."""
+        port = UnifiPortSensor(
+            cleanup_coordinator, PORT_SENSOR_TYPES[1], "site1", "device1", 99
+        )
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            port.unique_id,
+            config_entry=mock_config_entry,
+            translation_key=translation_key,
+        )
+        if not device_present:
+            cleanup_coordinator.data["devices"] = {}
+        await async_setup_entry(hass, mock_config_entry, MagicMock())
+        assert (entity_registry.async_get(row.entity_id) is None) is removed
+
+    @pytest.mark.parametrize("ownership", ["foreign", "platform", "domain"])
+    async def test_port_cleanup_respects_registry_ownership(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        ownership: str,
+    ) -> None:
+        """Retain port-shaped rows owned by another entry, platform, or domain."""
+        other = MockConfigEntry(
+            domain=DOMAIN,
+            entry_id="synthetic_foreign_entry",
+            data={CONF_CONSOLE_ID: "foreign_console"},
+            unique_id="foreign_console",
+        )
+        other.add_to_hass(hass)
+        port = UnifiPortSensor(
+            cleanup_coordinator, PORT_SENSOR_TYPES[1], "site1", "device1", 99
+        )
+        row = entity_registry.async_get_or_create(
+            "binary_sensor" if ownership == "domain" else "sensor",
+            "other_platform" if ownership == "platform" else DOMAIN,
+            port.unique_id,
+            config_entry=other if ownership == "foreign" else mock_config_entry,
+            translation_key=port.translation_key,
+            disabled_by=RegistryEntryDisabler.USER,
+        )
+        await async_setup_entry(hass, mock_config_entry, MagicMock())
+        assert entity_registry.async_get(row.entity_id) == row
+
+    @pytest.mark.parametrize(
+        ("unique_id", "removed"),
+        [
+            ("device1_port_speed_-1", True),
+            ("device1_port_speed_0", True),
+            ("device1_port_speed_99", True),
+            ("device1_port_speed_099", False),
+            ("device1_port_speed_bad", False),
+            ("device1_port_speed_", False),
+            ("_port_speed_99", False),
+            ("device1_port_unknown_99", False),
+            ("device1_port_speed", False),
+        ],
+    )
+    async def test_port_cleanup_requires_constructor_identity_shape(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        unique_id: str,
+        *,
+        removed: bool,
+    ) -> None:
+        """Require a nonempty device, known key, and canonical integer port tail."""
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            unique_id,
+            config_entry=mock_config_entry,
+            translation_key="port_speed",
+        )
+        await async_setup_entry(hass, mock_config_entry, MagicMock())
+        assert (entity_registry.async_get(row.entity_id) is None) is removed
+
+    async def test_active_port_retains_native_registry_identity(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+    ) -> None:
+        """Keep an active port's native row and user metadata across discovery."""
+        cleanup_coordinator.data["devices"]["site1"]["device1"]["ports"] = [
+            {"idx": 1, "state": "UP"}
+        ]
+        port = UnifiPortSensor(
+            cleanup_coordinator, PORT_SENSOR_TYPES[1], "site1", "device1", 1
+        )
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            port.unique_id,
+            config_entry=mock_config_entry,
+            translation_key=port.translation_key,
+            disabled_by=RegistryEntryDisabler.USER,
+        )
+        row = entity_registry.async_update_entity(
+            row.entity_id, name="Custom active port"
+        )
+        added: list[SensorEntity] = []
+        await async_setup_entry(hass, mock_config_entry, added.extend)
+        assert row.unique_id in {entity.unique_id for entity in added}
+        assert entity_registry.async_get(row.entity_id) == row
+
+    @pytest.mark.parametrize(
+        "description", STORAGE_SENSOR_TYPES, ids=lambda description: description.key
+    )
+    async def test_storage_rows_with_port_text_survive_cleanup(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        description: UnifiStorageSensorEntityDescription,
+    ) -> None:
+        """Preserve native storage rows whose mount paths contain _port_."""
+        storage = UnifiStorageSensor(
+            cleanup_coordinator,
+            description,
+            "site1",
+            "device1",
+            mount_point="/mnt/usb_port_1",
+            mount_label="Synthetic USB storage",
+            volatile=False,
+        )
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            storage.unique_id,
+            config_entry=mock_config_entry,
+            translation_key=storage.translation_key,
+            disabled_by=RegistryEntryDisabler.USER,
+        )
+        await async_setup_entry(hass, mock_config_entry, MagicMock())
+        assert entity_registry.async_get(row.entity_id) == row

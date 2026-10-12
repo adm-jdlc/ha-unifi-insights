@@ -10,11 +10,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import attr
 import pytest
+from homeassistant import config_entries
 from homeassistant.const import CONF_API_KEY, CONF_HOST, CONF_VERIFY_SSL
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.unifi_insights import (
+    async_setup_entry,
+)
 from custom_components.unifi_insights import (
     button as button_platform,
 )
@@ -53,6 +57,7 @@ from custom_components.unifi_insights.internet_activity_snapshot import (
     _resolve_entity_ids,
 )
 from custom_components.unifi_insights.number import VOUCHER_NUMBER_DESCRIPTIONS
+from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
 from custom_components.unifi_insights.sensor import SITE_CLIENT_SENSOR_TYPES
 from custom_components.unifi_insights.site_internet_activity_sensor import (
     SITE_INTERNET_ACTIVITY_SENSOR_TYPES,
@@ -1540,6 +1545,201 @@ async def test_successful_local_reauth_preserves_identity_and_updates_credential
     assert entry.data[CONF_API_KEY] == "pending_credential"
     assert entry.data[CONF_CONSOLE_ID] == entry.unique_id == "console_a"
     assert attr.asdict(entity_registry.async_get(row.entity_id)) == before
+
+
+@pytest.mark.parametrize("legacy_id", ["stored:key", " STORED-KEY ", None, ""])
+async def test_local_reauth_recovers_without_promoting_a_stored_credential(
+    hass: HomeAssistant, entity_registry: er.EntityRegistry, legacy_id: str | None
+) -> None:
+    """Rotate a legacy key while retaining native rows and awaiting safe backfill."""
+    entry = _entry(hass, legacy_id)
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+            CONF_HOST: "https://console.example.invalid",
+            CONF_API_KEY: "stored:key",
+        },
+    )
+    row = _row(
+        entity_registry,
+        entry,
+        "sensor",
+        "site_shared_site_total_clients",
+        "site_total_clients",
+    )
+    row = entity_registry.async_update_entity(
+        row.entity_id, name="Custom logical sensor"
+    )
+    before = attr.asdict(row)
+    with (
+        patch.object(
+            UnifiInsightsConfigFlow,
+            "_async_validate_local_connection",
+            AsyncMock(return_value=(True, None, {})),
+        ),
+        patch("custom_components.unifi_insights.async_setup_entry", return_value=True),
+        patch(
+            "custom_components.unifi_insights.async_migrate_entry", return_value=True
+        ),
+    ):
+        flow = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reauth", "entry_id": entry.entry_id},
+            data=entry.data,
+        )
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"], user_input={CONF_API_KEY: "pending_credential"}
+        )
+        await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_API_KEY] == "pending_credential"
+    assert CONF_CONSOLE_ID not in entry.data
+    assert resolve_console_namespace(entry) is None
+    assert attr.asdict(entity_registry.async_get(row.entity_id)) == before
+
+
+async def test_local_reauth_keeps_pending_credential_namespace_conflict_guard(
+    hass: HomeAssistant, entity_registry: er.EntityRegistry
+) -> None:
+    """Refuse to rotate a key into an existing safe console namespace."""
+    entry = _entry(hass)
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+            CONF_HOST: "https://console.example.invalid",
+        },
+    )
+    before = dict(entry.data)
+    row = _row(
+        entity_registry,
+        entry,
+        "sensor",
+        "console_a_site_shared_site_total_clients",
+        "site_total_clients",
+    )
+    with patch.object(
+        UnifiInsightsConfigFlow,
+        "_async_validate_local_connection",
+        AsyncMock(return_value=(True, None, {})),
+    ):
+        flow = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reauth", "entry_id": entry.entry_id},
+            data=entry.data,
+        )
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"], user_input={CONF_API_KEY: "CONSOLE_A"}
+        )
+    assert result["type"] == FlowResultType.FORM
+    assert result["errors"]["base"] == "site_entity_identity_conflict"
+    assert dict(entry.data) == before
+    assert entity_registry.async_get(row.entity_id) == row
+
+
+async def test_no_mac_setup_uses_distinct_hosts_for_a_shared_site(
+    hass: HomeAssistant, entity_registry: er.EntityRegistry, mock_coordinator
+) -> None:
+    """Backfill two legacy local consoles and discover independently owned rows."""
+
+    async def refresh_sites(coordinator):
+        """Expose the same non-default site on both synthetic consoles."""
+        coordinator.data = {"sites": {"site_shared": {"id": "site_shared"}}}
+
+    async def refresh_devices(coordinator):
+        """Expose no usable console MAC."""
+        coordinator.data = {"devices": {}}
+
+    entries = []
+    with (
+        patch(
+            "custom_components.unifi_insights.async_probe_network",
+            AsyncMock(
+                return_value=ProbeResult(
+                    ProbeStatus.AVAILABLE, sites=[MagicMock(id="site_shared")]
+                )
+            ),
+        ),
+        patch(
+            "custom_components.unifi_insights.async_probe_protect",
+            AsyncMock(return_value=ProbeResult(ProbeStatus.UNSUPPORTED)),
+        ),
+        patch(
+            "custom_components.unifi_insights.UnifiConfigCoordinator."
+            "async_config_entry_first_refresh",
+            autospec=True,
+            side_effect=refresh_sites,
+        ),
+        patch(
+            "custom_components.unifi_insights.UnifiDeviceCoordinator."
+            "async_config_entry_first_refresh",
+            autospec=True,
+            side_effect=refresh_devices,
+        ),
+        patch(
+            "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+            new_callable=AsyncMock,
+        ),
+    ):
+        for index in ("a", "b"):
+            credential = f"synthetic_key_{index}"
+            entry = _entry(hass, credential, f"entry_{index}")
+            hass.config_entries.async_update_entry(
+                entry,
+                data={
+                    **entry.data,
+                    CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+                    CONF_HOST: f"https://Console{index.upper()}.Example.Invalid",
+                    CONF_API_KEY: credential,
+                    CONF_VERIFY_SSL: False,
+                },
+            )
+            entry.mock_state(hass, config_entries.ConfigEntryState.LOADED)
+            assert await async_setup_entry(hass, entry)
+            assert (
+                entry.data[CONF_CONSOLE_ID]
+                == entry.unique_id
+                == (f"https://console{index}.example.invalid")
+            )
+            await hass.config_entries.async_unload(entry.entry_id)
+            entries.append(entry)
+    mock_coordinator.protect_client = None
+    mock_coordinator.data = {
+        "sites": {"site_shared": {"id": "site_shared"}},
+        "clients": {"site_shared": {}},
+        "vouchers": {"site_shared": {}},
+        "internet_activity": {
+            "site_shared": {
+                window: {"rx_bytes": 1, "tx_bytes": 2}
+                for window in ("1h", "1d", "1w", "1m")
+            }
+        },
+    }
+    identities = []
+    for entry in entries:
+        entities = await _discover_all(hass, entry, mock_coordinator)
+        identities.append({entity.unique_id for entity in entities})
+        for entity in entities:
+            domain = next(
+                domain
+                for domain, keys in SITE_ENTITY_SUFFIXES.items()
+                if entity.translation_key in keys
+            )
+            row = _row(
+                entity_registry,
+                entry,
+                domain,
+                entity.unique_id,
+                entity.translation_key,
+            )
+            assert row.config_entry_id == entry.entry_id
+    expected_count = sum(len(keys) for keys in SITE_ENTITY_SUFFIXES.values())
+    assert len(identities[0]) == len(identities[1]) == expected_count
+    assert identities[0].isdisjoint(identities[1])
 
 
 @pytest.mark.parametrize("credential_match", ["stored", "pending"])
