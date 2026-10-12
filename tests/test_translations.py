@@ -341,6 +341,21 @@ def test_wake_exception_translations_match_in_both_files() -> None:
     assert "{error}" in strings_exc["wake_failed"]["message"]
 
 
+def test_chime_playback_error_and_action_metadata_match_in_both_files() -> None:
+    """The retained action reports its unsupported behavior consistently."""
+    strings = json.loads(_STRINGS_JSON.read_text())
+    english = json.loads(_EN_JSON.read_text())
+    key = "chime_playback_unsupported"
+    assert strings["exceptions"][key] == english["exceptions"][key]
+    assert "You cannot play" in strings["exceptions"][key]["message"]
+    action = "play_chime_ringtone"
+    assert strings["services"][action] == english["services"][action]
+    assert "always raises" in strings["services"][action]["description"]
+    field = strings["services"][action]["fields"]["ringtone_id"]
+    assert "with or without" in field["description"]
+    assert "automations stay valid" in field["description"]
+
+
 def test_wake_button_translations_and_icon_resolve_in_both_files() -> None:
     """Wake button translation and icon exist in all files and options match."""
     en_btn = json.loads(_EN_JSON.read_text())["entity"]["button"]

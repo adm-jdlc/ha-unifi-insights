@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from custom_components.unifi_insights.api.exceptions import UniFiUnsupportedError
+
 from ..models import Chime
 
 if TYPE_CHECKING:
@@ -214,21 +216,45 @@ class ChimesEndpoint:
             chime_id, site_id, repeatTimes=repeat_times
         )
 
+    async def set_ringtone(
+        self,
+        chime_id: str,
+        ringtone_id: str,
+        site_id: str | None = None,
+    ) -> Chime:
+        """
+        Set the ringtone ID for every paired doorbell.
+
+        The official API does not enumerate ringtones. IDs are opaque strings,
+        and the console validates whether a ringtone exists.
+
+        Raises:
+            ValueError: If the ID is empty, the chime has no paired doorbell,
+                or an entry lacks another required ring settings field.
+
+        """
+        if not isinstance(ringtone_id, str) or not ringtone_id.strip():
+            msg = "Ringtone ID must be a non-empty string"
+            raise ValueError(msg)
+        return await self._update_ring_settings(
+            chime_id, site_id, ringtoneId=ringtone_id.strip()
+        )
+
     async def play(self, chime_id: str, site_id: str | None = None) -> bool:
         """
-        Play the chime sound.
+        Report that chime playback is unsupported, without making a request.
 
-        Not in the Protect v7.3.70 OpenAPI (chimes are GET/PATCH only);
-        route existence not yet live-verified.
+        Protect v7.3.70 has no chime playback route. A live request to the
+        undocumented route returns 404 "endpoint not found".
 
         Args:
             chime_id: The chime ID.
             site_id: The site ID (required for REMOTE connections, ignored for LOCAL).
 
-        Returns:
-            True if successful.
+        Raises:
+            UniFiUnsupportedError: The official API cannot play a chime.
 
         """
-        path = self._client.build_api_path(f"/chimes/{chime_id}/play", site_id)
-        await self._client._post(path)
-        return True
+        del chime_id, site_id
+        msg = "The official Protect API does not support chime playback"
+        raise UniFiUnsupportedError(msg)

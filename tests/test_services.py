@@ -4,7 +4,7 @@ import ast
 import inspect
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -154,6 +154,14 @@ class TestAsyncSetupServices:
         assert hass.services.has_service(DOMAIN, "ptz_move")
         assert hass.services.has_service(DOMAIN, "ptz_patrol")
         assert not hass.services.has_service(DOMAIN, "set_recording_mode")
+        for action in (
+            "set_chime_volume",
+            "play_chime_ringtone",
+            "set_chime_ringtone",
+            "set_chime_repeat_times",
+            "set_chime_paired_doorbells",
+        ):
+            assert hass.services.has_service(DOMAIN, action)
 
         # Clean up
         await async_unload_services(hass)
@@ -174,6 +182,14 @@ class TestAsyncUnloadServices:
         assert not hass.services.has_service(DOMAIN, SERVICE_POWER_CYCLE_PORT)
         assert not hass.services.has_service(DOMAIN, SERVICE_RECONNECT_CLIENT)
         assert not hass.services.has_service(DOMAIN, SERVICE_REMOVE_CLIENTS)
+        for action in (
+            "set_chime_volume",
+            "play_chime_ringtone",
+            "set_chime_ringtone",
+            "set_chime_repeat_times",
+            "set_chime_paired_doorbells",
+        ):
+            assert not hass.services.has_service(DOMAIN, action)
 
 
 class TestRefreshDataService:
@@ -1091,6 +1107,127 @@ class TestPTZServices:
 class TestChimeServices:
     """Tests for chime service handlers."""
 
+    def test_ringtone_schema_accepts_trimmed_opaque_id(
+        self,
+    ) -> None:
+        """IDs need not match an invented enum or a fixed hex pattern."""
+        validated = cast(
+            "dict[str, Any]",
+            services.SET_CHIME_RINGTONE_SCHEMA({"ringtone_id": "  opaque-tone-id  "}),
+        )
+        assert validated["ringtone_id"] == "opaque-tone-id"
+
+    @pytest.mark.parametrize("ringtone_id", ["", " ", None, 12, False])
+    def test_ringtone_schema_rejects_invalid_id(self, ringtone_id: Any) -> None:
+        """Blank and non-string IDs fail schema validation."""
+        with pytest.raises(vol.Invalid):
+            services.SET_CHIME_RINGTONE_SCHEMA({"ringtone_id": ringtone_id})
+
+    @pytest.mark.parametrize("ringtone_id", ["", " ", "tone-new", "default"])
+    def test_playback_compatibility_field_is_a_plain_string(self, ringtone_id):
+        """Compatibility values are ignored and are not ringtone selections."""
+        assert services.PLAY_CHIME_RINGTONE_SCHEMA({"ringtone_id": ringtone_id}) == {
+            "ringtone_id": ringtone_id
+        }
+
+    @pytest.mark.parametrize("ringtone_id", [None, 12, False])
+    def test_playback_compatibility_field_rejects_non_strings(self, ringtone_id):
+        """The optional compatibility field retains plain-string validation."""
+        with pytest.raises(vol.Invalid):
+            services.PLAY_CHIME_RINGTONE_SCHEMA({"ringtone_id": ringtone_id})
+
+    @pytest.mark.parametrize("service", ["set_chime_ringtone", "play_chime_ringtone"])
+    def test_ringtone_ui_uses_text_selector(self, service: str) -> None:
+        """Action UI accepts actual IDs and does not invent ringtone options."""
+        definitions = yaml.safe_load(
+            Path(services.__file__).with_suffix(".yaml").read_text(encoding="utf-8")
+        )
+        field = definitions[service]["fields"]["ringtone_id"]
+        assert field["selector"] == {"text": None}
+        schema = getattr(services, f"{service.upper()}_SCHEMA")
+        assert (
+            schema({"ringtone_id": field["example"]})["ringtone_id"]
+            == (field["example"])
+        )
+
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            None,
+            [],
+            [{}],
+            [
+                {
+                    "cameraId": "doorbell-a",
+                    "repeatTimes": 2,
+                    "ringtoneId": "tone-old",
+                    "volume": 25,
+                },
+                {
+                    "cameraId": "doorbell-b",
+                    "repeatTimes": 4,
+                    "ringtoneId": "tone-other",
+                    "volume": 75,
+                },
+            ],
+        ],
+    )
+    async def test_set_ringtone_service_reaches_real_facade_and_client(
+        self, hass: HomeAssistant, settings: Any
+    ) -> None:
+        """The service uses the spec body or exposes malformed settings safely."""
+        client = UniFiProtectClient(
+            auth=ApiKeyAuth(api_key="test-key"),
+            base_url="https://192.168.1.1",
+            connection_type=ConnectionType.LOCAL,
+        )
+        chime = {"id": "chime1", "mac": "AA:BB:CC:DD:EE:FF", "ringSettings": settings}
+        client._get = AsyncMock(return_value=chime)
+        client._patch = AsyncMock(return_value=chime)
+        coordinator = MagicMock(protect_client=client)
+        coordinator.data = {"protect": {"chimes": {"chime1": chime}}}
+        coordinator._require_protect_client = lambda: client
+        coordinator._async_execute_api_action = (
+            UnifiFacadeCoordinator._async_execute_api_action.__get__(coordinator)
+        )
+        coordinator.async_set_chime_ringtone = (
+            UnifiFacadeCoordinator.async_set_chime_ringtone.__get__(coordinator)
+        )
+        coordinator._protect_coordinator.async_request_refresh = AsyncMock()
+        entry = MagicMock(
+            entry_id="entry-chime", runtime_data=MagicMock(coordinator=coordinator)
+        )
+        await async_setup_services(hass)
+        with patch.object(hass.config_entries, "async_entries", return_value=[entry]):
+            if settings and settings[0]:
+                await hass.services.async_call(
+                    DOMAIN,
+                    SERVICE_SET_CHIME_RINGTONE,
+                    {"chime_id": "chime1", "ringtone_id": "  tone-new  "},
+                    blocking=True,
+                )
+                client._patch.assert_awaited_once_with(
+                    client.build_api_path("/chimes/chime1"),
+                    json_data={
+                        "ringSettings": [
+                            {**setting, "ringtoneId": "tone-new"}
+                            for setting in settings
+                        ]
+                    },
+                )
+                coordinator._protect_coordinator.async_request_refresh.assert_awaited_once()
+            else:
+                with pytest.raises(HomeAssistantError, match="Unable to set ringtone"):
+                    await hass.services.async_call(
+                        DOMAIN,
+                        SERVICE_SET_CHIME_RINGTONE,
+                        {"chime_id": "chime1", "ringtone_id": "tone-new"},
+                        blocking=True,
+                    )
+                client._patch.assert_not_awaited()
+                coordinator._protect_coordinator.async_request_refresh.assert_not_awaited()
+        await async_unload_services(hass)
+
     async def test_set_chime_volume_success(self, hass: HomeAssistant):
         """Test set_chime_volume success."""
         mock_coordinator = MagicMock()
@@ -1118,31 +1255,71 @@ class TestChimeServices:
 
         await async_unload_services(hass)
 
-    async def test_play_chime_ringtone_success(self, hass: HomeAssistant):
-        """Test play_chime_ringtone success."""
+    @pytest.mark.parametrize(
+        "optional",
+        [
+            {},
+            {"ringtone_id": "synthetic-opaque-id"},
+            {"ringtone_id": "default"},
+            {"ringtone_id": ""},
+        ],
+    )
+    async def test_play_chime_ringtone_unsupported(self, hass: HomeAssistant, optional):
+        """Valid targets receive the same error with or without the ignored field."""
         mock_coordinator = MagicMock()
         mock_coordinator.protect_client = MagicMock()
-        mock_coordinator.async_play_chime = AsyncMock()
+        error = HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="chime_playback_unsupported",
+        )
+        mock_coordinator.async_play_chime = AsyncMock(side_effect=error)
         mock_entry = MagicMock()
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = mock_coordinator
 
         await async_setup_services(hass)
 
-        with patch.object(
-            hass.config_entries,
-            "async_entries",
-            return_value=[mock_entry],
+        with (
+            patch.object(
+                hass.config_entries, "async_entries", return_value=[mock_entry]
+            ),
+            pytest.raises(HomeAssistantError) as raised,
         ):
             await hass.services.async_call(
                 DOMAIN,
                 "play_chime_ringtone",
-                {"chime_id": "chime1"},
+                {"chime_id": "chime1", **optional},
                 blocking=True,
             )
 
-        mock_coordinator.async_play_chime.assert_called_once_with("chime1")
+        assert raised.value is error
+        mock_coordinator.async_play_chime.assert_awaited_once_with("chime1")
+        mock_coordinator.protect_client.chimes.play.assert_not_called()
+        mock_coordinator.protect_client._post.assert_not_called()
 
+        await async_unload_services(hass)
+
+    @pytest.mark.parametrize("target", [{}, {"chime_id": "missing-chime"}])
+    async def test_play_chime_invalid_target_precedes_unsupported_error(
+        self, hass: HomeAssistant, target
+    ):
+        """Missing and unknown targets fail validation before facade dispatch."""
+        coordinator = MagicMock()
+        coordinator.protect_client = MagicMock()
+        coordinator.async_play_chime = AsyncMock()
+        coordinator.data = {"protect": {"chimes": {"chime1": {"id": "chime1"}}}}
+        entry = MagicMock()
+        entry.runtime_data.coordinator = coordinator
+        await async_setup_services(hass)
+        with (
+            patch.object(hass.config_entries, "async_entries", return_value=[entry]),
+            pytest.raises(ServiceValidationError),
+        ):
+            await hass.services.async_call(
+                DOMAIN, "play_chime_ringtone", target, blocking=True
+            )
+        coordinator.async_play_chime.assert_not_called()
+        coordinator.protect_client.chimes.play.assert_not_called()
         await async_unload_services(hass)
 
 
@@ -2081,7 +2258,7 @@ class TestServiceErrorHandling:
             await hass.services.async_call(
                 DOMAIN,
                 "set_chime_ringtone",
-                {"chime_id": "chime1", "ringtone_id": "default"},
+                {"chime_id": "chime1", "ringtone_id": "tone-1"},
                 blocking=True,
             )
 
@@ -2111,7 +2288,7 @@ class TestServiceErrorHandling:
             await hass.services.async_call(
                 DOMAIN,
                 "set_chime_ringtone",
-                {"chime_id": "chime1", "ringtone_id": "default"},
+                {"chime_id": "chime1", "ringtone_id": "tone-1"},
                 blocking=True,
             )
 
@@ -2193,12 +2370,12 @@ class TestServiceErrorHandling:
             await hass.services.async_call(
                 DOMAIN,
                 "set_chime_ringtone",
-                {"chime_id": "chime1", "ringtone_id": "default"},
+                {"chime_id": "chime1", "ringtone_id": "tone-1"},
                 blocking=True,
             )
 
         mock_coordinator.async_set_chime_ringtone.assert_called_once_with(
-            "chime1", "default"
+            "chime1", "tone-1"
         )
 
         await async_unload_services(hass)
@@ -2924,32 +3101,41 @@ class TestConsoleOwnershipRouting:
             coord2.async_set_chime_volume.assert_called_with("chime2", 40)
             coord1.async_set_chime_volume.assert_not_called()
 
-            await hass.services.async_call(
-                DOMAIN,
-                "play_chime_ringtone",
-                {"chime_id": "chime2"},
-                blocking=True,
+            coord2.async_play_chime.side_effect = HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="chime_playback_unsupported",
             )
+            with pytest.raises(HomeAssistantError) as raised:
+                await hass.services.async_call(
+                    DOMAIN,
+                    "play_chime_ringtone",
+                    {"chime_id": "chime2", "ringtone_id": "synthetic-opaque-id"},
+                    blocking=True,
+                )
+            assert raised.value.translation_key == "chime_playback_unsupported"
             coord2.async_play_chime.assert_called_once_with("chime2")
+            coord1.async_play_chime.assert_not_called()
+            coord1.protect_client._post.assert_not_called()
+            coord2.protect_client._post.assert_not_called()
 
             await hass.services.async_call(
                 DOMAIN,
                 "set_chime_ringtone",
-                {"chime_id": "chime2", "ringtone_id": "default"},
+                {"chime_id": "chime2", "ringtone_id": "tone-1"},
                 blocking=True,
             )
-            coord2.async_set_chime_ringtone.assert_called_once_with("chime2", "default")
+            coord2.async_set_chime_ringtone.assert_called_once_with("chime2", "tone-1")
 
             await hass.services.async_call(
                 DOMAIN,
                 "set_chime_ringtone",
-                {"chime_id": "chime2", "camera_id": "cam2", "ringtone_id": "digital"},
+                {"chime_id": "chime2", "camera_id": "cam2", "ringtone_id": "tone-2"},
                 blocking=True,
             )
             # camera_id only selects the owning console; the Protect API call
             # itself stays chime-wide.
             assert coord2.async_set_chime_ringtone.call_count == 2
-            coord2.async_set_chime_ringtone.assert_called_with("chime2", "digital")
+            coord2.async_set_chime_ringtone.assert_called_with("chime2", "tone-2")
             coord1.async_set_chime_ringtone.assert_not_called()
 
             await hass.services.async_call(
@@ -3972,10 +4158,10 @@ class TestConsoleRoutingEdgeCases:
             await hass.services.async_call(
                 DOMAIN,
                 "set_chime_ringtone",
-                {"chime_id": "chime1", "ringtone_id": "default", "camera_id": "cam1"},
+                {"chime_id": "chime1", "ringtone_id": "tone-1", "camera_id": "cam1"},
                 blocking=True,
             )
-            coord.async_set_chime_ringtone.assert_called_once_with("chime1", "default")
+            coord.async_set_chime_ringtone.assert_called_once_with("chime1", "tone-1")
 
             await hass.services.async_call(
                 DOMAIN,
@@ -4778,7 +4964,7 @@ class TestServiceComprehensiveFullCoverage:
             await hass.services.async_call(
                 DOMAIN,
                 SERVICE_SET_CHIME_RINGTONE,
-                {"ringtone_id": "digital"},
+                {"ringtone_id": "tone-2"},
                 blocking=True,
             )
 
@@ -4833,7 +5019,7 @@ class TestServiceComprehensiveFullCoverage:
             await hass.services.async_call(
                 DOMAIN,
                 SERVICE_SET_CHIME_RINGTONE,
-                {"chime_id": "chime1", "ringtone_id": "digital", "camera_id": ["cam1"]},
+                {"chime_id": "chime1", "ringtone_id": "tone-2", "camera_id": ["cam1"]},
                 blocking=True,
             )
             assert coord.async_set_chime_ringtone.called

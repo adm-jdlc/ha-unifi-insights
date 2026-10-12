@@ -169,6 +169,20 @@
         }
       }
     },
+    "play_chime_ringtone": {
+      "name": "Play Chime Ringtone",
+      "description": "This action always raises a not supported error because the official Protect API has no chime playback route.",
+      "fields": {
+        "chime_id": {
+          "name": "Chime ID",
+          "description": "ID of the chime"
+        },
+        "ringtone_id": {
+          "name": "Ringtone ID",
+          "description": "Kept only so existing automations stay valid. The action raises the same not supported error with or without this field."
+        }
+      }
+    },
     "set_chime_paired_doorbells": {
       "name": "Set Chime Paired Doorbells",
       "description": "Choose which doorbells ring a UniFi Protect chime. The selection replaces the chime's current pairing. Leave Doorbells empty to unpair every doorbell.",
@@ -802,6 +816,9 @@
     }
   },
   "exceptions": {
+    "chime_playback_unsupported": {
+      "message": "You cannot play this chime because the official UniFi Protect API does not support chime playback."
+    },
     "cannot_connect": {
       "message": "Unable to connect to UniFi controller at {host}. Please check the host address and network connectivity."
     },

@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from custom_components.unifi_insights.data_transforms import (
+    current_chime_ringtone_id,
     is_volatile_storage_mount,
     map_device_status,
     normalize_innerspace_snapshot,
@@ -25,6 +26,38 @@ from tests.fixtures.library_responses import (
     SAMPLE_PROTECT_LIGHT,
     SAMPLE_PROTECT_SENSOR,
 )
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (None, None),
+        ([], None),
+        ({}, None),
+        ({"ringSettings": None}, None),
+        ({"ringSettings": {}}, None),
+        ({"ringSettings": []}, None),
+        ({"ringSettings": [None]}, None),
+        ({"ringSettings": [{}]}, None),
+        ({"ringSettings": [{"ringtoneId": 1}]}, None),
+        ({"ringSettings": [{"ringtoneId": True}]}, None),
+        ({"ringSettings": [{"ringtoneId": ""}]}, None),
+        ({"ringSettings": [{"ringtoneId": " "}]}, None),
+        (
+            {"ringSettings": [{"ringtoneId": "tone-a"}, {"ringtoneId": "tone-b"}]},
+            None,
+        ),
+        ({"ringSettings": [{"ringtoneId": "tone-a"}, {}]}, None),
+        ({"ringSettings": [{"ringtoneId": "tone-a"}]}, "tone-a"),
+        (
+            {"ringSettings": [{"ringtoneId": "tone-a"}, {"ringtoneId": "tone-a"}]},
+            "tone-a",
+        ),
+    ],
+)
+def test_current_chime_ringtone_id_is_safe_and_requires_agreement(data, expected):
+    """Only one valid ID shared by all paired settings is a current value."""
+    assert current_chime_ringtone_id(data) == expected
 
 
 def test_map_device_status_online():

@@ -32,13 +32,6 @@ from .api.network.models.client import ClientType
 from .button import get_device_port, port_can_be_power_cycled
 from .carrier_fabric_data import CarrierFabricData
 from .const import (
-    CHIME_RINGTONE_CHRISTMAS,
-    CHIME_RINGTONE_CUSTOM_1,
-    CHIME_RINGTONE_CUSTOM_2,
-    CHIME_RINGTONE_DEFAULT,
-    CHIME_RINGTONE_DIGITAL,
-    CHIME_RINGTONE_MECHANICAL,
-    CHIME_RINGTONE_TRADITIONAL,
     CONF_CARRIER_ACTIONS,
     CONF_CONNECTION_TYPE,
     CONNECTION_TYPE_CARRIER_FABRIC,
@@ -1370,6 +1363,9 @@ SET_CHIME_VOLUME_SCHEMA = vol.Schema(
     }
 )
 
+# Ringtone IDs are opaque strings, not a fixed list of sound names.
+RINGTONE_ID_SCHEMA = vol.All(str, vol.Strip, vol.Length(min=1))
+
 # Schema for play_chime_ringtone service
 PLAY_CHIME_RINGTONE_SCHEMA = vol.Schema(
     {
@@ -1377,17 +1373,7 @@ PLAY_CHIME_RINGTONE_SCHEMA = vol.Schema(
         vol.Optional("device_id"): TARGET_SELECTOR_SCHEMA,
         vol.Optional("entity_id"): TARGET_SELECTOR_SCHEMA,
         vol.Optional("target"): TARGET_DICT_SCHEMA,
-        vol.Optional("ringtone_id"): vol.In(
-            [
-                CHIME_RINGTONE_DEFAULT,
-                CHIME_RINGTONE_MECHANICAL,
-                CHIME_RINGTONE_DIGITAL,
-                CHIME_RINGTONE_CHRISTMAS,
-                CHIME_RINGTONE_TRADITIONAL,
-                CHIME_RINGTONE_CUSTOM_1,
-                CHIME_RINGTONE_CUSTOM_2,
-            ]
-        ),
+        vol.Optional("ringtone_id"): str,
     }
 )
 
@@ -1398,17 +1384,7 @@ SET_CHIME_RINGTONE_SCHEMA = vol.Schema(
         vol.Optional("device_id"): TARGET_SELECTOR_SCHEMA,
         vol.Optional("entity_id"): TARGET_SELECTOR_SCHEMA,
         vol.Optional("target"): TARGET_DICT_SCHEMA,
-        vol.Required("ringtone_id"): vol.In(
-            [
-                CHIME_RINGTONE_DEFAULT,
-                CHIME_RINGTONE_MECHANICAL,
-                CHIME_RINGTONE_DIGITAL,
-                CHIME_RINGTONE_CHRISTMAS,
-                CHIME_RINGTONE_TRADITIONAL,
-                CHIME_RINGTONE_CUSTOM_1,
-                CHIME_RINGTONE_CUSTOM_2,
-            ]
-        ),
+        vol.Required("ringtone_id"): RINGTONE_ID_SCHEMA,
         vol.Optional("camera_id"): TARGET_SELECTOR_SCHEMA,
     }
 )
@@ -2332,7 +2308,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             hass, resource_type="chime", resource_id=raw_chime_id
         )
 
-        _LOGGER.info("Playing ringtone on chime %s", chime_id)
         await coordinator.async_play_chime(chime_id)
 
     async def async_handle_set_chime_ringtone(call: ServiceCall) -> None:

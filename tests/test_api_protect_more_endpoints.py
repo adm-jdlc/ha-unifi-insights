@@ -1099,16 +1099,8 @@ async def test_chimes_update_ring_settings_errors() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "chimes.update(ringtone=...) sends top-level 'ringtone'; spec "
-        "PATCH /v1/chimes/{id} only allows name, cameraIds, and ringSettings "
-        "(issue #268)"
-    ),
-)
-async def test_chime_set_ringtone_spec_mismatch() -> None:
-    """Setting chime ringtone via update sends top-level 'ringtone'."""
+async def test_chime_set_ringtone_spec_request() -> None:
+    """Setting a ringtone preserves every doorbell's other ring settings."""
     ringtone_id = "66d025b301ebc903e80003ea"
     ring_settings = [
         {
@@ -1131,7 +1123,7 @@ async def test_chime_set_ringtone_spec_mismatch() -> None:
             {**SAMPLE_CHIME, "ringSettings": updated_settings},
         ]
     )
-    chime = await _client(session).chimes.update("chime-1", ringtone=ringtone_id)
+    chime = await _client(session).chimes.set_ringtone("chime-1", ringtone_id)
     assert chime.id == "chime-1"
     assert chime.model_extra is not None
     assert chime.model_extra["ringSettings"] == updated_settings

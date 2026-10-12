@@ -268,7 +268,7 @@ data:
 - **Cameras:** live view, snapshots and RTSPS streams, with switches and selects for the status light, HDR and video mode.
 - **Detection:** motion, person, vehicle, animal and package binary sensors, and smart detection and doorbell event entities.
 - **Lights:** floodlight on/off and brightness, and a light mode action.
-- **Chimes:** play button, volume, repeat count and ringtone, and which doorbells ring the chime.
+- **Chimes:** volume, repeat count and ringtone, and which doorbells ring the chime.
 - **Sirens:** sound a siren for 5, 10, 20 or 30 seconds, and set its volume.
 - **PTZ:** move to a preset, and start or stop a patrol.
 - **Sensors:** temperature, humidity, light level, battery, motion, door/window, tamper and leak.
@@ -291,9 +291,9 @@ data:
 | Start PTZ Patrol, Stop PTZ Patrol                                                                      | Button                | PTZ cameras                                                                     |
 | Floodlight                                                                                             | Light                 | On/off and brightness                                                           |
 | Brightness Level                                                                                       | Number                | Floodlight brightness level                                                     |
-| Play                                                                                                   | Button                | Play the chime                                                                  |
+| Play                                                                                                   | Button                | Always raises a not supported error; sends no request                           |
 | Chime Volume, Repeat Times                                                                             | Number                | Chime settings                                                                  |
-| Ringtone                                                                                               | Select                | Chime ringtone                                                                  |
+| Ringtone                                                                                               | Select                | Protect ringtone IDs already used by this console's chimes                      |
 | Liveview                                                                                               | Select                | Live view shown on a viewer                                                     |
 | Temperature, Humidity, Light, Battery                                                                  | Sensor                | Protect sensors (°C, %, lux, %)                                                 |
 | Motion Detection, Door/Window Status, Tamper Detection, Leak Detection, External Leak Detection        | Binary sensor         | Protect sensors                                                                 |
@@ -318,9 +318,9 @@ data:
 | `unifi_insights.ptz_patrol`                 | Start or stop a PTZ patrol                                               |
 | `unifi_insights.set_light_mode`             | Set a light's mode (`always`, `motion`, `off`)                           |
 | `unifi_insights.set_light_level`            | Set a light's brightness (0–100)                                         |
-| `unifi_insights.play_chime_ringtone`        | Play a ringtone on a chime                                               |
+| `unifi_insights.play_chime_ringtone`        | Always raises a not supported error; sends no request                    |
 | `unifi_insights.set_chime_volume`           | Set a chime's volume (0–100)                                             |
-| `unifi_insights.set_chime_ringtone`         | Set a chime's ringtone                                                   |
+| `unifi_insights.set_chime_ringtone`         | Set an opaque Protect ringtone ID for every paired doorbell              |
 | `unifi_insights.set_chime_repeat_times`     | Set how many times a chime repeats (1–10)                                |
 | `unifi_insights.set_chime_paired_doorbells` | Choose which doorbells ring a chime (replaces its current pairing)       |
 | `unifi_insights.trigger_alarm`              | Trigger an Alarm Manager webhook alarm                                   |
@@ -353,12 +353,26 @@ data:
 ```
 
 ```yaml
-# Play a ringtone on a chime
-action: unifi_insights.play_chime_ringtone
+# Set the same ringtone for every doorbell paired to a chime
+action: unifi_insights.set_chime_ringtone
 data:
   chime_id: "chime-id"
-  ringtone_id: "default" # default, mechanical, digital, christmas, traditional, custom1, custom2
+  ringtone_id: "example-ringtone-id"
 ```
+
+Use the Protect ringtone ID shown by the **Ringtone** select or its
+`chime_ringtone_id` attribute. The select lists only IDs already used by this
+console's chimes because the official API has no ringtone catalogue or
+name-to-ID mapping. The action also accepts IDs not currently in use; the console
+validates them. Changing the ringtone applies to every paired doorbell while
+preserving its own volume and repeat count. A chime with no paired doorbells has
+no ringtone setting to change.
+
+The **Play** button and `play_chime_ringtone` action always raise a clear
+not supported error and send no request because the official Protect API has
+no chime playback endpoint. The action's optional `ringtone_id` field is kept
+only so existing automations stay valid. Calls with and without the field
+raise the same error.
 
 ```yaml
 # Choose which doorbells ring a chime (replaces its current pairing).

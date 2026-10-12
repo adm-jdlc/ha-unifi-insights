@@ -168,6 +168,27 @@ def transform_protect_chime(lib_chime: dict) -> dict:
     }
 
 
+def current_chime_ringtone_id(chime_data: Any) -> str | None:
+    """Read one reported ringtone ID only when every ring setting agrees."""
+    if not isinstance(chime_data, dict):
+        return None
+    settings = chime_data.get("ringSettings")
+    if not isinstance(settings, list) or not settings:
+        return None
+    current: str | None = None
+    for setting in settings:
+        if not isinstance(setting, dict):
+            return None
+        value = setting.get("ringtoneId")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        if current is None:
+            current = value
+        elif value != current:
+            return None
+    return current
+
+
 def _is_unspecified_address(value: str) -> bool:
     """Return True for 0.0.0.0 / ::, the placeholder a down link reports."""
     try:

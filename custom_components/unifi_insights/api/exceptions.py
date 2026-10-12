@@ -50,6 +50,10 @@ class UniFiConnectionError(UniFiError):
     """Raised when connection to the UniFi API fails."""
 
 
+class UniFiUnsupportedError(UniFiError):
+    """Raised when the official API does not support an operation."""
+
+
 class UniFiResponseError(UniFiError):
     """Raised when the API returns an error response."""
 
