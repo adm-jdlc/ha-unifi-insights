@@ -23,6 +23,7 @@ def _resolve_entity_ids(
     entry_id: str,
     namespace: str | None,
 ) -> dict[str, str]:
+    """Resolve activity references using the shared ownership and legacy policy."""
     ids: dict[str, str] = {}
     # Sensor keys implemented by site_internet_activity_sensor.py
     for direction in ("download", "upload"):

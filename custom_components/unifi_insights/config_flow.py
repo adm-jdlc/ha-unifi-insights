@@ -70,7 +70,11 @@ from .const import (
     DEFAULT_TRACK_SUBSCRIBERS,
     DOMAIN,
 )
-from .helpers import SiteEntityIdentityError, async_rekey_site_entities
+from .helpers import (
+    SiteEntityIdentityError,
+    async_rekey_site_entities,
+    async_restore_site_entity_identities,
+)
 from .probe import (
     ProbeResult,
     ProbeStatus,
@@ -729,6 +733,60 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    def _async_update_site_entry_and_abort(
+        self,
+        entry: ConfigEntry,
+        data: dict[str, Any],
+        console_id: Any,
+        *,
+        unique_id: str | None = None,
+        reason: str | None = None,
+    ) -> ConfigFlowResult:
+        """
+        Compensate synchronous failures across registry and entry updates.
+
+        Home Assistant schedules persistence and reloads after in-memory mutation.
+        This protects the synchronous transition, not delayed disk failures or
+        process crashes; both stores remain managed by native Home Assistant APIs.
+        """
+        previous_data = entry.data
+        previous_unique_id = entry.unique_id
+        updates = async_rekey_site_entities(
+            self.hass, entry, console_id, pending_api_key=data.get(CONF_API_KEY)
+        )
+        kwargs: dict[str, Any] = {"data": data}
+        if unique_id is not None:
+            kwargs["unique_id"] = unique_id
+        if reason is not None:
+            kwargs["reason"] = reason
+        try:
+            return self.async_update_reload_and_abort(entry, **kwargs)
+        except Exception:
+            try:
+                if entry.data != previous_data or entry.unique_id != previous_unique_id:
+                    owner = (
+                        self.hass.config_entries.async_entry_for_domain_unique_id(
+                            DOMAIN, previous_unique_id
+                        )
+                        if previous_unique_id is not None
+                        else None
+                    )
+                    if self.hass.config_entries.async_get_entry(
+                        entry.entry_id
+                    ) is not entry or (owner is not None and owner is not entry):
+                        _LOGGER.warning(
+                            "Cannot safely restore the saved connection identity"
+                        )
+                    else:
+                        self.hass.config_entries.async_update_entry(
+                            entry, data=previous_data, unique_id=previous_unique_id
+                        )
+            except Exception:
+                _LOGGER.warning("Unable to fully restore saved connection settings")
+            finally:
+                async_restore_site_entity_identities(self.hass, entry, updates)
+            raise
+
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -752,18 +810,13 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                         verify_ssl=reauth_entry.data.get(CONF_VERIFY_SSL, False),
                     )
                     if is_valid:
-                        async_rekey_site_entities(
-                            self.hass,
+                        return self._async_update_site_entry_and_abort(
                             reauth_entry,
-                            reauth_entry.data.get(CONF_CONSOLE_ID),
-                            pending_api_key=user_input[CONF_API_KEY],
-                        )
-                        return self.async_update_reload_and_abort(
-                            reauth_entry,
-                            data={
+                            {
                                 **reauth_entry.data,
                                 CONF_API_KEY: user_input[CONF_API_KEY],
                             },
+                            reauth_entry.data.get(CONF_CONSOLE_ID),
                         )
                     if error_code == "invalid_auth":
                         errors[CONF_API_KEY] = "invalid_auth"
@@ -790,19 +843,14 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                                     console_id,
                                 )
                                 if sites_found:
-                                    async_rekey_site_entities(
-                                        self.hass,
+                                    return self._async_update_site_entry_and_abort(
                                         reauth_entry,
-                                        console_id,
-                                        pending_api_key=api_key,
-                                    )
-                                    return self.async_update_reload_and_abort(
-                                        reauth_entry,
-                                        data={
+                                        {
                                             **reauth_entry.data,
                                             CONF_API_KEY: api_key,
                                             CONF_CONSOLE_ID: console_id,
                                         },
+                                        console_id,
                                     )
                                 errors["base"] = "invalid_console_id"
                             except UniFiAuthenticationError:
@@ -948,15 +996,10 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                         if new_id:
                             new_data[CONF_CONSOLE_ID] = new_id
 
-                        async_rekey_site_entities(
-                            self.hass,
+                        return self._async_update_site_entry_and_abort(
                             entry,
+                            new_data,
                             new_id,
-                            pending_api_key=user_input[CONF_API_KEY],
-                        )
-                        return self.async_update_reload_and_abort(
-                            entry,
-                            data=new_data,
                             unique_id=new_id or entry.unique_id,
                             reason="reconfigure_successful",
                         )
@@ -1000,15 +1043,10 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                                         CONF_CONSOLE_ID: console_id,
                                         CONF_API_KEY: api_key,
                                     }
-                                    async_rekey_site_entities(
-                                        self.hass,
+                                    return self._async_update_site_entry_and_abort(
                                         entry,
+                                        new_data,
                                         console_id,
-                                        pending_api_key=api_key,
-                                    )
-                                    return self.async_update_reload_and_abort(
-                                        entry,
-                                        data=new_data,
                                         unique_id=console_id,
                                         reason="reconfigure_successful",
                                     )

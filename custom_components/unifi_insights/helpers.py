@@ -130,14 +130,60 @@ class SiteEntityIdentityError(ValueError):
     """A console identity change cannot preserve logical-site registry rows."""
 
 
+type SiteEntityIdentityUpdates = tuple[tuple[er.RegistryEntry, str], ...]
+
+
+def async_restore_site_entity_identities(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    updates: SiteEntityIdentityUpdates,
+) -> bool:
+    """Restore exact owned rows after a synchronous transition failure."""
+    registry = er.async_get(hass)
+    restored = True
+    for previous, target in reversed(updates):
+        try:
+            current = registry.async_get(previous.entity_id)
+            if (
+                current is None
+                or current.id != previous.id
+                or current.config_entry_id != entry.entry_id
+                or current.domain != previous.domain
+                or current.platform != previous.platform
+                or current.translation_key != previous.translation_key
+            ):
+                restored = False
+                continue
+            if current.unique_id == previous.unique_id:
+                continue
+            occupied = registry.async_get_entity_id(
+                previous.domain, DOMAIN, previous.unique_id
+            )
+            if current.unique_id != target or (
+                occupied is not None and occupied != current.entity_id
+            ):
+                restored = False
+                continue
+            registry.async_update_entity(
+                current.entity_id, new_unique_id=previous.unique_id
+            )
+        except Exception:
+            # A native update may raise after mutation. Continue attempting every
+            # other row without claiming that save scheduling succeeded.
+            restored = False
+    if not restored:
+        _LOGGER.warning("Unable to fully roll back logical-site registry identities")
+    return restored
+
+
 def async_rekey_site_entities(
     hass: HomeAssistant,
     entry: ConfigEntry,
     new_console_id: Any,
     *,
     pending_api_key: Any = None,
-) -> None:
-    """Preflight and atomically re-key the entry's exact logical-site families."""
+) -> SiteEntityIdentityUpdates:
+    """Preflight and re-key exact families, retaining safe compensation records."""
     old = resolve_console_namespace(entry)
     new = normalize_console_namespace(
         new_console_id,
@@ -145,7 +191,7 @@ def async_rekey_site_entities(
     )
     if new is None:
         if new_console_id in (None, "") and old is None:
-            return
+            return ()
         err_msg = "A safe console namespace is required"
         raise SiteEntityIdentityError(err_msg)
     if (
@@ -159,9 +205,9 @@ def async_rekey_site_entities(
         err_msg = "The pending credential conflicts with console identity"
         raise SiteEntityIdentityError(err_msg)
     if old is None or old == new:
-        return
+        return ()
     registry = er.async_get(hass)
-    updates: list[tuple[str, str, str]] = []
+    updates: list[tuple[er.RegistryEntry, str]] = []
     for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
         suffixes = SITE_ENTITY_SUFFIXES.get(entity.domain)
         if entity.platform != DOMAIN or suffixes is None:
@@ -186,29 +232,17 @@ def async_rekey_site_entities(
         if registry.async_get_entity_id(entity.domain, DOMAIN, target):
             err_msg = "Logical-site target identity is occupied"
             raise SiteEntityIdentityError(err_msg)
-        updates.append((entity.entity_id, entity.unique_id, target))
+        updates.append((entity, target))
 
-    attempted: list[tuple[str, str]] = []
+    attempted: list[tuple[er.RegistryEntry, str]] = []
     try:
-        for entity_id, previous, target in updates:
-            attempted.append((entity_id, previous))
-            registry.async_update_entity(entity_id, new_unique_id=target)
+        for entity, target in updates:
+            attempted.append((entity, target))
+            registry.async_update_entity(entity.entity_id, new_unique_id=target)
     except Exception:
-        rollback_failed = False
-        for entity_id, previous in reversed(attempted):
-            try:
-                current = registry.async_get(entity_id)
-                if current is None:
-                    rollback_failed = True
-                elif current.unique_id != previous:
-                    registry.async_update_entity(entity_id, new_unique_id=previous)
-            except Exception:
-                rollback_failed = True
-        if rollback_failed:
-            _LOGGER.exception(
-                "Unable to fully roll back logical-site registry identities",
-            )
+        async_restore_site_entity_identities(hass, entry, tuple(attempted))
         raise
+    return tuple(attempted)
 
 
 def is_doorbell_camera_model(camera_data: dict[str, Any]) -> bool:

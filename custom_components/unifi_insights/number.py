@@ -518,6 +518,7 @@ def _async_setup_voucher_numbers(
 
     @callback
     def discover() -> None:
+        """Discover eligible owned voucher inputs without duplicating registry rows."""
         new_entities: list[UnifiVoucherInputNumber] = []
         namespace = resolve_console_namespace(entry)
         for site_id in voucher_site_ids(coordinator.data):

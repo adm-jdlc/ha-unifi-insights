@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import CONF_API_KEY, CONF_HOST
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.setup import async_setup_component
@@ -12,6 +13,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.entity_registry import EntityRegistry
     from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.unifi_insights import (
@@ -33,7 +35,11 @@ from custom_components.unifi_insights.api.innerspace import (
     InnerSpaceProject,
     InnerSpaceProjectIdentity,
 )
-from custom_components.unifi_insights.const import CONF_SITE_IDS, DOMAIN
+from custom_components.unifi_insights.const import (
+    CONF_CONSOLE_ID,
+    CONF_SITE_IDS,
+    DOMAIN,
+)
 from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
 
 
@@ -51,6 +57,69 @@ async def test_setup_entry_success(
     await hass.async_block_till_done()
 
     assert mock_config_entry.state == ConfigEntryState.LOADED
+
+
+@pytest.mark.parametrize(
+    ("site_id", "expected_identity"),
+    [
+        ("synthetic_site", "synthetic_site"),
+        ("default", "https://console.example.invalid"),
+    ],
+)
+async def test_setup_legacy_credential_identity_without_console_mac(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_network_client: MagicMock,
+    mock_protect_client: MagicMock,
+    mock_local_auth: MagicMock,
+    enable_custom_integrations: None,
+    entity_registry: EntityRegistry,
+    site_id: str,
+    expected_identity: str,
+) -> None:
+    """Backfill a legacy credential identity before new site sensors are discovered."""
+    credential = "synthetic_setup_credential"
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        data={
+            **mock_config_entry.data,
+            CONF_API_KEY: credential,
+            CONF_CONSOLE_ID: credential,
+            CONF_HOST: "https://Console.Example.Invalid",
+        },
+        unique_id=credential,
+    )
+    mock_network_client.sites.get_all.return_value = [
+        {"id": site_id, "name": "Synthetic site"}
+    ]
+    mock_network_client.devices.get_all.return_value = []
+    mock_protect_client.cameras.get_all.return_value = []
+    mock_protect_client.nvr.get.return_value = None
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_config_entry.state == ConfigEntryState.LOADED
+    assert mock_config_entry.data[CONF_CONSOLE_ID] == expected_identity
+    assert mock_config_entry.unique_id == expected_identity
+    expected_keys = {
+        "site_total_clients",
+        "site_wired_clients",
+        "site_wireless_clients",
+    }
+    rows = [
+        row
+        for row in entity_registry.entities.values()
+        if row.config_entry_id == mock_config_entry.entry_id
+        and row.translation_key in expected_keys
+    ]
+    assert len(rows) == 3
+    assert {row.translation_key for row in rows} == expected_keys
+    assert all(
+        row.unique_id.startswith(f"{expected_identity}_{site_id}_") for row in rows
+    )
+    assert all(credential not in row.unique_id for row in rows)
 
 
 async def test_setup_entry_auth_failed(

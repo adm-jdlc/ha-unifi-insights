@@ -596,7 +596,7 @@ async def async_setup_entry(
     if is_local and (not console_id or console_id == entry.data.get(CONF_API_KEY)):
         if console_mac:
             console_id = console_mac
-        elif not console_id:
+        else:
             # The host is an address, not an identity: it changes on a DHCP
             # renew, which is the problem this separation exists to fix. Fall
             # back to the site id first and keep the host as a last resort,

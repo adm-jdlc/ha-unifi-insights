@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import attr
@@ -45,6 +46,7 @@ from custom_components.unifi_insights.helpers import (
     SiteEntityIdentityError,
     async_migrate_site_entity,
     async_rekey_site_entities,
+    async_restore_site_entity_identities,
     owned_site_entity_unique_id,
 )
 from custom_components.unifi_insights.internet_activity_snapshot import (
@@ -57,10 +59,15 @@ from custom_components.unifi_insights.site_internet_activity_sensor import (
 )
 from custom_components.unifi_insights.voucher_sensor import VOUCHER_SENSOR_TYPES
 
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
+
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
 
 def _entry(hass, namespace="console_a", entry_id="entry_a"):
+    """Register a synthetic config entry with a canonical stored console identity."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_CONSOLE_ID: namespace, CONF_API_KEY: "synthetic_credential"},
@@ -72,6 +79,7 @@ def _entry(hass, namespace="console_a", entry_id="entry_a"):
 
 
 def _row(registry, entry, domain, unique_id, key, **kwargs):
+    """Create a real registry row with explicit ownership and family metadata."""
     return registry.async_get_or_create(
         domain, DOMAIN, unique_id, config_entry=entry, translation_key=key, **kwargs
     )
@@ -95,10 +103,12 @@ def _row(registry, entry, domain, unique_id, key, **kwargs):
     ],
 )
 def test_namespace_validation(value, credentials, expected):
+    """Accept canonical console IDs while rejecting malformed and credential IDs."""
     assert normalize_console_namespace(value, credentials=credentials) == expected
 
 
 def test_namespace_uses_only_stored_console(hass):
+    """Require a stored console identity instead of an unsafe entry or host fallback."""
     entry = _entry(hass)
     assert resolve_console_namespace(entry) == "console_a"
     hass.config_entries.async_update_entry(
@@ -121,6 +131,9 @@ def test_namespace_uses_only_stored_console(hass):
 async def test_all_families_migrate_preserving_metadata(
     hass, entity_registry, device_registry, area_registry, domain, key
 ):
+    """
+    Migrate every logical family while retaining native identity and customizations.
+    """
     entry = _entry(hass)
     area = area_registry.async_create("Synthetic area")
     device = device_registry.async_get_or_create(
@@ -162,6 +175,7 @@ async def test_all_families_migrate_preserving_metadata(
 async def test_owned_legacy_priority_over_occupied_target(
     hass, entity_registry, caplog, target_owner
 ):
+    """Keep the owned legacy row when a same-owner or foreign target is occupied."""
     entry = _entry(hass)
     other = _entry(hass, "console_b", "entry_b")
     key = "internet_download_1h"
@@ -196,6 +210,7 @@ async def test_owned_legacy_priority_over_occupied_target(
 async def test_foreign_rows_missing_namespace_and_occupied_target(
     hass, entity_registry
 ):
+    """Never claim foreign rows or create unscoped entities without a namespace."""
     entry = _entry(hass)
     other = _entry(hass, "console_b", "entry_b")
     key = "site_total_clients"
@@ -247,6 +262,7 @@ async def test_foreign_rows_missing_namespace_and_occupied_target(
 
 
 async def test_migration_race_keeps_owned_legacy(hass, entity_registry, caplog):
+    """Retain the actual owned legacy identity when native migration conflicts."""
     entry = _entry(hass)
     row = _row(
         entity_registry,
@@ -272,12 +288,16 @@ async def test_migration_race_keeps_owned_legacy(hass, entity_registry, caplog):
 async def test_migration_value_error_after_native_update_uses_actual_owned_identity(
     hass, entity_registry, caplog, metadata_changes
 ):
+    """Use the owned target after a native update mutates before raising ValueError."""
     entry = _entry(hass)
     key = "active_vouchers"
     row = _row(entity_registry, entry, "sensor", "site_shared_" + key, key)
     native = entity_registry.async_update_entity
 
     def update(entity_id, **kwargs):
+        """
+        Raise ValueError after the real native registry update has mutated the row.
+        """
         native(
             entity_id,
             **kwargs,
@@ -303,6 +323,7 @@ async def test_migration_value_error_after_native_update_uses_actual_owned_ident
 async def test_unexpected_migration_failure_propagates_and_later_discovery_is_safe(
     hass, entity_registry
 ):
+    """Propagate unexpected mutation failures without recreating a stale identity."""
     entry = _entry(hass)
     row = _row(
         entity_registry,
@@ -314,6 +335,7 @@ async def test_unexpected_migration_failure_propagates_and_later_discovery_is_sa
     native = entity_registry.async_update_entity
 
     def update(*args, **kwargs):
+        """Raise an unexpected exception after the native identity mutation succeeds."""
         native(*args, **kwargs)
         err_msg = "Synthetic unexpected post-mutation failure"
         raise RuntimeError(err_msg)
@@ -338,6 +360,7 @@ async def test_unexpected_migration_failure_propagates_and_later_discovery_is_sa
 
 
 async def test_missing_lookup_record_is_not_claimed():
+    """Fail closed when an indexed identity has no retrievable registry row."""
     registry = MagicMock()
     registry.async_get_entity_id.side_effect = [None, "sensor.gone"]
     registry.async_get.return_value = None
@@ -377,6 +400,9 @@ async def test_missing_lookup_record_is_not_claimed():
 async def test_rekey_exact_families_preserves_physical_resource_and_foreign_rows(
     hass, entity_registry
 ):
+    """
+    Rekey complete logical families while leaving physical and foreign rows intact.
+    """
     entry = _entry(hass)
     other = _entry(hass, "console_b", "entry_b")
     expected = []
@@ -438,6 +464,7 @@ async def test_rekey_exact_families_preserves_physical_resource_and_foreign_rows
 
 @pytest.mark.parametrize("owner", ["same", "foreign"])
 async def test_rekey_conflict_preflight_is_atomic(hass, entity_registry, owner):
+    """Reject occupied targets before mutating any eligible logical registry row."""
     entry = _entry(hass)
     other = _entry(hass, "console_b", "entry_b")
     rows = [
@@ -466,6 +493,7 @@ async def test_rekey_conflict_preflight_is_atomic(hass, entity_registry, owner):
 
 
 async def test_rekey_unexpected_update_failure_rolls_back(hass, entity_registry):
+    """Restore earlier native registry mutations when a later update fails."""
     entry = _entry(hass)
     rows = [
         _row(entity_registry, entry, "sensor", "console_a_site_" + key, key)
@@ -475,6 +503,9 @@ async def test_rekey_unexpected_update_failure_rolls_back(hass, entity_registry)
     count = 0
 
     def update(*args, **kwargs):
+        """
+        Fail the second update before mutation to exercise compensation of earlier rows.
+        """
         nonlocal count
         count += 1
         if count == 2:
@@ -502,6 +533,7 @@ async def test_rekey_unexpected_update_failure_rolls_back(hass, entity_registry)
     ],
 )
 async def test_rekey_rejects_ambiguous_metadata(hass, entity_registry, unique_id, key):
+    """Reject incomplete logical family metadata before changing registry identities."""
     entry = _entry(hass)
     _row(entity_registry, entry, "sensor", unique_id, key)
     with pytest.raises(SiteEntityIdentityError, match="metadata"):
@@ -509,6 +541,7 @@ async def test_rekey_rejects_ambiguous_metadata(hass, entity_registry, unique_id
 
 
 async def test_rekey_namespace_noops_and_credentials(hass, entity_registry):
+    """Keep matching namespaces unchanged and reject current or pending credentials."""
     entry = _entry(hass)
     async_rekey_site_entities(hass, entry, "CONSOLE_A")
     for value in ("", 5, "synthetic_credential", "pending:key"):
@@ -522,6 +555,7 @@ async def test_rekey_namespace_noops_and_credentials(hass, entity_registry):
 
 
 def test_all_description_keys_are_in_exact_family_mapping():
+    """Require the guarded family mapping to cover every logical description key."""
     assert {
         d.key
         for d in (
@@ -536,6 +570,7 @@ def test_all_description_keys_are_in_exact_family_mapping():
 
 
 def test_identity_conflict_message_has_english_parity_and_truthful_recovery():
+    """Keep the English conflict message consistent with preservation behavior."""
     root = Path(__file__).parents[1] / "custom_components" / DOMAIN
     messages = [
         json.loads((root / path).read_text())["config"]["error"][
@@ -555,6 +590,10 @@ def test_identity_conflict_message_has_english_parity_and_truthful_recovery():
 async def test_reauth_identity_failure_reports_preservation_error_without_mutation(
     hass, entity_registry, caplog, connection_type
 ):
+    """
+    Report unsafe reauth identity changes without persisting settings or registry
+    changes.
+    """
     entry = _entry(hass)
     hass.config_entries.async_update_entry(
         entry,
@@ -618,6 +657,7 @@ async def test_reauth_identity_failure_reports_preservation_error_without_mutati
 
 @pytest.mark.parametrize("namespace", [None, "", " ", "bad namespace", "CONSOLE_A"])
 def test_builder_requires_a_valid_canonical_namespace(namespace):
+    """Reject missing namespaces instead of manufacturing unscoped new identities."""
     with pytest.raises(ValueError, match="validated console namespace"):
         build_site_unique_id(namespace, "site_shared", "site_total_clients")
 
@@ -625,6 +665,7 @@ def test_builder_requires_a_valid_canonical_namespace(namespace):
 async def test_known_physical_legacy_is_never_migrated_or_claimed(
     hass, entity_registry
 ):
+    """Preserve physical rows even when their IDs resemble a logical legacy family."""
     entry = _entry(hass)
     physical = _row(
         entity_registry,
@@ -678,6 +719,7 @@ async def test_known_physical_legacy_is_never_migrated_or_claimed(
 async def test_owned_incompatible_target_is_not_reused(
     hass, entity_registry, with_legacy
 ):
+    """Reject same-owner targets whose metadata identifies a different entity family."""
     entry = _entry(hass)
     key = "internet_download_1h"
     target = _row(
@@ -718,6 +760,7 @@ async def test_owned_incompatible_target_is_not_reused(
 async def test_ambiguous_owned_candidate_skips_and_is_retried(
     hass, entity_registry, mock_coordinator, caplog, candidate, metadata
 ):
+    """Leave ambiguous candidates undiscovered so later valid metadata can retry."""
     entry = _entry(hass)
     key = "internet_download_1h"
     unique_id = (
@@ -763,6 +806,7 @@ async def test_ambiguous_owned_candidate_skips_and_is_retried(
 async def test_native_post_mutation_failure_restores_all_attempted_ids(
     hass, entity_registry, caplog, failure
 ):
+    """Restore every attempted native update after mutation or save scheduling fails."""
     entry = _entry(hass)
     rows = [
         _row(entity_registry, entry, "sensor", "console_a_site_" + key, key)
@@ -774,6 +818,10 @@ async def test_native_post_mutation_failure_restores_all_attempted_ids(
     count = 0
 
     def update(*args, **kwargs):
+        """
+        Raise after the second real native mutation to retain the attempted-row
+        boundary.
+        """
         nonlocal count
         count += 1
         result = native_update(*args, **kwargs)
@@ -783,6 +831,9 @@ async def test_native_post_mutation_failure_restores_all_attempted_ids(
         return result
 
     def save():
+        """
+        Inject initial or rollback save-scheduling failure after native row mutation.
+        """
         nonlocal count
         count += 1
         if count == 2 or (failure == "rollback_save" and count == 3):
@@ -821,6 +872,7 @@ async def test_native_post_mutation_failure_restores_all_attempted_ids(
 
 
 async def _discover_all(hass, entry, coordinator):
+    """Run every logical-site platform against the same native registry."""
     entry.runtime_data = SimpleNamespace(
         coordinator=coordinator, mobility_coordinator=None
     )
@@ -887,6 +939,9 @@ async def test_two_consoles_all_families_real_registry(
 async def test_missing_namespace_skips_until_later_discovery_and_reload(
     hass, entity_registry, mock_coordinator
 ):
+    """
+    Retry logical discovery after a safe namespace becomes available and on reload.
+    """
     entry = _entry(hass, None)
     mock_coordinator.protect_client = None
     mock_coordinator.data = {
@@ -953,6 +1008,7 @@ async def test_missing_namespace_skips_until_later_discovery_and_reload(
 async def test_platform_discovery_never_claims_disabled_foreign_targets(
     hass, entity_registry, mock_coordinator
 ):
+    """Protect disabled and unloaded foreign ownership during logical discovery."""
     entry = _entry(hass)
     other = _entry(hass, "console_b", "entry_b")
     mock_coordinator.protect_client = None
@@ -1002,6 +1058,9 @@ async def test_platform_discovery_never_claims_disabled_foreign_targets(
 async def test_local_flow_rekeys_before_persisting_and_blocks_partial_change(
     hass, entity_registry, outcome
 ):
+    """
+    Persist local settings only after successful native logical identity migration.
+    """
     entry = _entry(hass, "site_fallback")
     hass.config_entries.async_update_entry(
         entry,
@@ -1037,6 +1096,10 @@ async def test_local_flow_rekeys_before_persisting_and_blocks_partial_change(
     count = 0
 
     def update(*args, **kwargs):
+        """
+        Inject pre-mutation or post-mutation failure in the second native registry
+        update.
+        """
         nonlocal count
         count += 1
         if outcome == "failure" and count == 2:
@@ -1102,6 +1165,9 @@ async def test_local_flow_rekeys_before_persisting_and_blocks_partial_change(
 async def test_remote_flow_rekeys_or_reuses_normalized_namespace(
     hass, entity_registry, source
 ):
+    """
+    Use the canonical namespace through native remote reconfigure and reauth flows.
+    """
     old = "console_a" if source == "reconfigure" else "CONSOLE_A"
     entry = _entry(hass, old)
     hass.config_entries.async_update_entry(
@@ -1158,3 +1224,380 @@ async def test_remote_flow_rekeys_or_reuses_normalized_namespace(
         entity_registry.async_get(row.entity_id).unique_id
         == new + "_site_shared_active_vouchers"
     )
+
+
+async def test_rekey_disappearing_row_does_not_prevent_other_restoration(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Keep a missing row missing while restoring every surviving attempted row."""
+    entry = _entry(hass)
+    rows = [
+        _row(entity_registry, entry, "sensor", "console_a_site_" + key, key)
+        for key in ("active_vouchers", "latest_voucher_code")
+    ]
+    native = entity_registry.async_update_entity
+    count = 0
+
+    def update(*args: Any, **kwargs: Any) -> er.RegistryEntry:
+        """Remove the second row after its native mutation, then fail the update."""
+        nonlocal count
+        count += 1
+        result = native(*args, **kwargs)
+        if count == 2:
+            entity_registry.async_remove(result.entity_id)
+            err_msg = "Synthetic disappearing registry row"
+            raise RuntimeError(err_msg)
+        return result
+
+    with (
+        patch.object(entity_registry, "async_update_entity", side_effect=update),
+        pytest.raises(RuntimeError, match="disappearing"),
+    ):
+        async_rekey_site_entities(hass, entry, "new")
+    assert entity_registry.async_get(rows[0].entity_id).unique_id == rows[0].unique_id
+    assert entity_registry.async_get(rows[1].entity_id) is None
+    assert count == 3
+    assert "Unable to fully roll back" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "interference", ["foreign_owner", "replacement", "changed_uid", "occupied_old"]
+)
+async def test_compensation_never_takes_over_interfering_registry_rows(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    caplog: pytest.LogCaptureFixture,
+    interference: str,
+) -> None:
+    """Restore unaffected rows without overwriting ownership or identity changes."""
+    entry = _entry(hass)
+    other = _entry(hass, "console_b", "entry_b")
+    rows = [
+        _row(entity_registry, entry, "sensor", "console_a_site_" + key, key)
+        for key in ("active_vouchers", "latest_voucher_code")
+    ]
+    updates = async_rekey_site_entities(hass, entry, "new")
+    last = rows[-1]
+    if interference == "foreign_owner":
+        entity_registry.async_update_entity(
+            last.entity_id, config_entry_id=other.entry_id
+        )
+    elif interference == "replacement":
+        entity_registry.async_remove(last.entity_id)
+        replacement = _row(
+            entity_registry,
+            other,
+            "sensor",
+            "foreign_replacement",
+            last.translation_key,
+        )
+        entity_registry.async_update_entity(
+            replacement.entity_id, new_entity_id=last.entity_id
+        )
+    elif interference == "changed_uid":
+        entity_registry.async_update_entity(
+            last.entity_id, new_unique_id="intervening_identity"
+        )
+    else:
+        _row(entity_registry, other, "sensor", last.unique_id, last.translation_key)
+    protected = attr.asdict(entity_registry.async_get(last.entity_id))
+    assert not async_restore_site_entity_identities(hass, entry, updates)
+    assert entity_registry.async_get(rows[0].entity_id).unique_id == rows[0].unique_id
+    assert attr.asdict(entity_registry.async_get(last.entity_id)) == protected
+    assert "Unable to fully roll back" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "before_update",
+        "after_update",
+        "save_schedule",
+        "restore_save_schedule",
+        "reload_schedule",
+        "after_reload_schedule",
+    ],
+)
+async def test_native_entry_update_failure_compensates_both_state_owners(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
+) -> None:
+    """Restore exact entry settings and owned rows across native update failures."""
+    entry = _entry(hass, "site_fallback")
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+            CONF_HOST: "https://console.example",
+        },
+    )
+    previous_data = dict(entry.data)
+    previous_unique_id = entry.unique_id
+    rows = [
+        _row(
+            entity_registry,
+            entry,
+            "sensor",
+            build_site_unique_id("site_fallback", "site_shared", key),
+            key,
+        )
+        for key in ("site_total_clients", "site_wired_clients")
+    ]
+    before = [attr.asdict(row) for row in rows]
+    namespace = "aa:bb:cc:dd:ee:ff"
+    manager = hass.config_entries
+    native_update = manager.async_update_entry
+    native_save = manager._async_schedule_save
+    native_reload = manager.async_schedule_reload
+    saves = 0
+    updates = 0
+
+    def update(entry: ConfigEntry, **kwargs: Any) -> bool:
+        """Fail before or after the real native connection settings mutation."""
+        nonlocal updates
+        updates += 1
+        if updates == 1:
+            assert all(
+                entity_registry.async_get(row.entity_id).unique_id.startswith(namespace)
+                for row in rows
+            )
+            if failure == "before_update":
+                err_msg = "Synthetic config update failure"
+                raise RuntimeError(err_msg)
+        result = native_update(entry, **kwargs)
+        if updates == 1 and failure == "after_update":
+            err_msg = "Synthetic config update failure"
+            raise RuntimeError(err_msg)
+        return result
+
+    def save() -> None:
+        """Raise after native entry mutation at initial or compensation scheduling."""
+        nonlocal saves
+        saves += 1
+        if failure in {"save_schedule", "restore_save_schedule"} and (
+            saves == 1 or failure == "restore_save_schedule"
+        ):
+            err_msg = "Synthetic config save scheduling failure"
+            raise RuntimeError(err_msg)
+        native_save()
+
+    def reload(entry_id: str) -> None:
+        """Fail either before or after the real native reload task is scheduled."""
+        if failure == "after_reload_schedule":
+            native_reload(entry_id)
+        if failure in {"reload_schedule", "after_reload_schedule"}:
+            err_msg = "Synthetic reload scheduling failure"
+            raise RuntimeError(err_msg)
+        native_reload(entry_id)
+
+    with (
+        patch.object(
+            UnifiInsightsConfigFlow,
+            "_async_validate_local_connection",
+            AsyncMock(return_value=(True, None, {"mac": namespace})),
+        ),
+        patch.object(manager, "async_update_entry", side_effect=update),
+        patch.object(manager, "_async_schedule_save", side_effect=save),
+        patch.object(manager, "async_schedule_reload", side_effect=reload),
+        patch(
+            "custom_components.unifi_insights.async_setup_entry", return_value=True
+        ) as setup,
+        patch(
+            "custom_components.unifi_insights.async_migrate_entry", return_value=True
+        ),
+    ):
+        flow = await entry.start_reconfigure_flow(hass)
+        result = await manager.flow.async_configure(
+            flow["flow_id"],
+            user_input={
+                CONF_HOST: "https://new-console.example",
+                CONF_API_KEY: "pending_credential",
+                CONF_VERIFY_SSL: False,
+            },
+        )
+        await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.FORM
+    assert result["errors"]["base"] == "unknown"
+    assert dict(entry.data) == previous_data
+    assert entry.unique_id == previous_unique_id
+    assert manager.async_entry_for_domain_unique_id(DOMAIN, namespace) is None
+    for row, original in zip(rows, before, strict=True):
+        current = attr.asdict(entity_registry.async_get(row.entity_id))
+        assert {
+            key: value
+            for key, value in current.items()
+            if key not in {"previous_unique_id", "modified_at"}
+        } == {
+            key: value
+            for key, value in original.items()
+            if key not in {"previous_unique_id", "modified_at"}
+        }
+    assert updates == (1 if failure == "before_update" else 2)
+    assert ("Unable to fully restore saved connection settings" in caplog.text) == (
+        failure == "restore_save_schedule"
+    )
+    assert setup.call_count == (1 if failure == "after_reload_schedule" else 0)
+
+
+async def test_entry_compensation_does_not_claim_an_occupied_original_identity(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Refuse a foreign entry identity while still restoring eligible registry rows."""
+    entry = _entry(hass)
+    row = _row(
+        entity_registry,
+        entry,
+        "sensor",
+        "console_a_site_shared_active_vouchers",
+        "active_vouchers",
+    )
+    flow = UnifiInsightsConfigFlow()
+    flow.hass = hass
+    native = hass.config_entries.async_update_entry
+    foreign = None
+
+    def update(entry: ConfigEntry, **kwargs: Any) -> bool:
+        """Occupy the freed original identity after native entry mutation succeeds."""
+        nonlocal foreign
+        native(entry, **kwargs)
+        foreign = _entry(hass, "console_a", "entry_b")
+        err_msg = "Synthetic interference after native entry update"
+        raise RuntimeError(err_msg)
+
+    with (
+        patch.object(hass.config_entries, "async_update_entry", side_effect=update),
+        pytest.raises(RuntimeError, match="interference"),
+    ):
+        flow._async_update_site_entry_and_abort(
+            entry,
+            {**entry.data, CONF_CONSOLE_ID: "new"},
+            "new",
+            unique_id="new",
+        )
+    assert foreign is not None
+    assert (
+        hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, "console_a")
+        is foreign
+    )
+    assert entry.unique_id == "new"
+    assert entity_registry.async_get(row.entity_id).unique_id == row.unique_id
+    assert "Cannot safely restore the saved connection identity" in caplog.text
+
+
+async def test_successful_local_reauth_preserves_identity_and_updates_credential(
+    hass: HomeAssistant, entity_registry: er.EntityRegistry
+) -> None:
+    """Exercise the local native reauth path without changing logical identities."""
+    entry = _entry(hass)
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+            CONF_HOST: "https://console.example",
+        },
+    )
+    row = _row(
+        entity_registry,
+        entry,
+        "sensor",
+        "console_a_site_shared_site_total_clients",
+        "site_total_clients",
+    )
+    row = entity_registry.async_update_entity(
+        row.entity_id, name="Custom logical sensor"
+    )
+    before = attr.asdict(row)
+    with (
+        patch.object(
+            UnifiInsightsConfigFlow,
+            "_async_validate_local_connection",
+            AsyncMock(return_value=(True, None, {})),
+        ),
+        patch("custom_components.unifi_insights.async_setup_entry", return_value=True),
+        patch(
+            "custom_components.unifi_insights.async_migrate_entry", return_value=True
+        ),
+    ):
+        flow = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reauth", "entry_id": entry.entry_id},
+            data=entry.data,
+        )
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"], user_input={CONF_API_KEY: "pending_credential"}
+        )
+        await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_API_KEY] == "pending_credential"
+    assert entry.data[CONF_CONSOLE_ID] == entry.unique_id == "console_a"
+    assert attr.asdict(entity_registry.async_get(row.entity_id)) == before
+
+
+@pytest.mark.parametrize("credential_match", ["stored", "pending"])
+async def test_local_reconfigure_clears_credential_based_current_identity(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    credential_match: str,
+) -> None:
+    """Discard a credential-shaped current ID without weakening pending-key guards."""
+    namespace = "STORED-KEY" if credential_match == "stored" else "PENDING-KEY"
+    entry = _entry(hass, namespace)
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+            CONF_HOST: "https://console.example",
+            CONF_API_KEY: "stored:key",
+        },
+    )
+    previous_data = dict(entry.data)
+    previous_unique_id = entry.unique_id
+    key = "site_total_clients"
+    uid = (
+        build_legacy_site_unique_id("site_shared", key)
+        if credential_match == "stored"
+        else build_site_unique_id("pending:key", "site_shared", key)
+    )
+    row = _row(entity_registry, entry, "sensor", uid, key)
+    before = attr.asdict(row)
+    discovered = "aa:bb:cc:dd:ee:ff"
+    with (
+        patch.object(
+            UnifiInsightsConfigFlow,
+            "_async_validate_local_connection",
+            AsyncMock(return_value=(True, None, {"mac": discovered})),
+        ),
+        patch("custom_components.unifi_insights.async_setup_entry", return_value=True),
+        patch(
+            "custom_components.unifi_insights.async_migrate_entry", return_value=True
+        ),
+    ):
+        flow = await entry.start_reconfigure_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"],
+            user_input={
+                CONF_HOST: "https://new-console.example",
+                CONF_API_KEY: "pending:key",
+                CONF_VERIFY_SSL: False,
+            },
+        )
+        await hass.async_block_till_done()
+    if credential_match == "stored":
+        assert result["type"] == FlowResultType.ABORT
+        assert entry.data[CONF_CONSOLE_ID] == entry.unique_id == discovered
+    else:
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"]["base"] == "site_entity_identity_conflict"
+        assert dict(entry.data) == previous_data
+        assert entry.unique_id == previous_unique_id
+    assert attr.asdict(entity_registry.async_get(row.entity_id)) == before

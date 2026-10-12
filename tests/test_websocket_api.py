@@ -12,17 +12,24 @@ from unittest.mock import Mock, patch
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry as MockConfigEntryForTest,
 )
 
 from custom_components.unifi_insights import CarrierFabricData
+from custom_components.unifi_insights.console_identity import (
+    build_legacy_site_unique_id,
+    build_site_unique_id,
+)
 from custom_components.unifi_insights.const import (
     CONF_CONNECTION_TYPE,
+    CONF_CONSOLE_ID,
     CONNECTION_TYPE_CARRIER_FABRIC,
     DOMAIN,
 )
 from custom_components.unifi_insights.helpers import async_get_device_entry
+from custom_components.unifi_insights.internet_activity_snapshot import WINDOWS
 from custom_components.unifi_insights.topology import build_site_topology
 from custom_components.unifi_insights.websocket_api import (
     _UNLOAD_WATCHERS,
@@ -789,6 +796,156 @@ async def test_internet_activity_get_returns_snapshot(
     assert msg["success"]
     assert msg["result"]["windows"]["1h"]["download_bytes"] == 1000
     assert msg["result"]["windows"]["1h"]["upload_bytes"] == 500
+
+
+@pytest.fixture
+async def internet_activity_entries(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_network_client: Mock,
+    mock_protect_client: Mock,
+    mock_local_auth: Mock,
+    enable_custom_integrations: None,
+) -> list[MockConfigEntry]:
+    """Load two synthetic consoles with independent totals for one shared site."""
+    entries = []
+    for index, namespace in enumerate(("console_a", "console_b"), start=1):
+        entry = MockConfigEntryForTest(
+            domain=DOMAIN,
+            entry_id=f"activity_entry_{namespace}",
+            unique_id=namespace,
+            data={**mock_config_entry.data, CONF_CONSOLE_ID: namespace},
+        )
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        data = _seed(entry)
+        data["internet_activity"] = {
+            SITE: {
+                window: {"rx_bytes": index * 1000, "tx_bytes": index * 500}
+                for window in WINDOWS
+            }
+        }
+        data["internet_activity_unavailable"] = set()
+        entries.append(entry)
+    return entries
+
+
+async def test_internet_activity_get_namespaces_shared_site_registry_rows(
+    hass: HomeAssistant,
+    internet_activity_entries: list[MockConfigEntry],
+    entity_registry: er.EntityRegistry,
+    hass_ws_client: Any,
+) -> None:
+    """The native WebSocket entrypoint forwards each console's namespace."""
+    expected_ids = []
+    for entry in internet_activity_entries:
+        owned_ids = {}
+        for direction in ("download", "upload"):
+            for window in WINDOWS:
+                key = f"internet_{direction}_{window}"
+                row = entity_registry.async_get_or_create(
+                    "sensor",
+                    DOMAIN,
+                    build_site_unique_id(entry.data[CONF_CONSOLE_ID], SITE, key),
+                    config_entry=entry,
+                    translation_key=key,
+                )
+                owned_ids[f"{direction}_{window}"] = row.entity_id
+        expected_ids.append(owned_ids)
+    registry_before = dict(entity_registry.entities)
+    client = await hass_ws_client(hass)
+    snapshots = []
+
+    for index, (entry, owned_ids) in enumerate(
+        zip(internet_activity_entries, expected_ids, strict=True), start=1
+    ):
+        await client.send_json(
+            {
+                "id": index,
+                "type": "unifi_insights/internet_activity/get",
+                "entry_id": entry.entry_id,
+                "site_id": SITE,
+            }
+        )
+        response = await client.receive_json()
+
+        assert response["success"]
+        snapshot = response["result"]
+        assert snapshot["entry_id"] == entry.entry_id
+        assert snapshot["site_id"] == SITE
+        assert snapshot["entity_ids"] == owned_ids
+        assert snapshot["windows"]["1h"]["download_bytes"] == index * 1000
+        assert all(
+            entity_registry.async_get(entity_id).config_entry_id == entry.entry_id
+            for entity_id in snapshot["entity_ids"].values()
+        )
+        snapshots.append(snapshot)
+
+    assert len(snapshots[0]["entity_ids"]) == len(snapshots[1]["entity_ids"]) == 8
+    assert set(snapshots[0]["entity_ids"].values()).isdisjoint(
+        snapshots[1]["entity_ids"].values()
+    )
+    assert dict(entity_registry.entities) == registry_before
+
+
+@pytest.mark.parametrize(
+    ("legacy_owner", "target_owner", "expected_candidate"),
+    [
+        ("own", "foreign", "legacy"),
+        ("own", "own", "legacy"),
+        ("foreign", "own", "target"),
+        ("foreign", "foreign", None),
+        (None, "foreign", None),
+        (None, "own", "target"),
+    ],
+)
+async def test_generic_internet_activity_payload_preserves_candidate_ownership(
+    hass: HomeAssistant,
+    internet_activity_entries: list[MockConfigEntry],
+    entity_registry: er.EntityRegistry,
+    legacy_owner: str | None,
+    target_owner: str,
+    expected_candidate: str | None,
+) -> None:
+    """The generic payload follows owned legacy identities without takeover."""
+    entries = dict(zip(("own", "foreign"), internet_activity_entries, strict=True))
+    key = "internet_download_1h"
+    candidates = {}
+    if legacy_owner is not None:
+        candidates["legacy"] = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            build_legacy_site_unique_id(SITE, key),
+            config_entry=entries[legacy_owner],
+            translation_key=key,
+        )
+    candidates["target"] = entity_registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        build_site_unique_id("console_a", SITE, key),
+        config_entry=entries[target_owner],
+        translation_key=key,
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    candidates["target"] = entity_registry.async_update_entity(
+        candidates["target"].entity_id, name="Customized activity sensor"
+    )
+    registry_before = dict(entity_registry.entities)
+
+    snapshot = _generic_site_payload(hass, entries["own"], SITE, "internet_activity")
+
+    expected = (
+        {"download_1h": candidates[expected_candidate].entity_id}
+        if expected_candidate is not None
+        else {}
+    )
+    assert snapshot["entity_ids"] == expected
+    assert dict(entity_registry.entities) == registry_before
+    assert all(
+        entity_registry.async_get(entity_id).config_entry_id == entries["own"].entry_id
+        for entity_id in snapshot["entity_ids"].values()
+    )
 
 
 async def test_performance_get_returns_snapshot(

@@ -1914,17 +1914,11 @@ async def test_async_setup_entry_keeps_preset_console_name_from_device(
         await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_async_setup_entry_leaves_unstable_console_id_when_no_mac_found(
+async def test_async_setup_entry_backfills_credential_identity_when_no_mac_found(
     hass: HomeAssistant,
     enable_custom_integrations,
 ) -> None:
-    """A console_id that is still the API key is left untouched if no mac is found.
-
-    The fallback to site id/host only fires when console_id was completely
-    unset - an api-key-shaped console_id from an old schema is left as-is
-    rather than being silently replaced, since it is still a better-than-
-    nothing identity that a future refresh may yet resolve to a real mac.
-    """
+    """Backfill a legacy credential identity with the host when no MAC is found."""
     from custom_components.unifi_insights import async_setup_entry
     from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
 
@@ -1933,7 +1927,7 @@ async def test_async_setup_entry_leaves_unstable_console_id_when_no_mac_found(
         unique_id="local_api_key_unstable",
         data={
             CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
-            CONF_HOST: "192.168.1.53",
+            CONF_HOST: "https://Console.Example.Invalid",
             CONF_API_KEY: "local_api_key_unstable",
             CONF_VERIFY_SSL: False,
             CONF_CONSOLE_ID: "local_api_key_unstable",
@@ -1942,6 +1936,7 @@ async def test_async_setup_entry_leaves_unstable_console_id_when_no_mac_found(
     entry.add_to_hass(hass)
 
     async def fake_device_refresh(coord_self):
+        """Refresh a console without discovered devices or a usable MAC."""
         coord_self.data = {"devices": {}}
 
     with (
@@ -1975,8 +1970,8 @@ async def test_async_setup_entry_leaves_unstable_console_id_when_no_mac_found(
         entry.mock_state(hass, config_entries.ConfigEntryState.LOADED)
         res = await async_setup_entry(hass, entry)
         assert res is True
-        assert entry.data.get(CONF_CONSOLE_ID) == "local_api_key_unstable"
-        assert entry.unique_id == "local_api_key_unstable"
+        assert entry.data.get(CONF_CONSOLE_ID) == "https://console.example.invalid"
+        assert entry.unique_id == "https://console.example.invalid"
         await hass.config_entries.async_unload(entry.entry_id)
 
 
