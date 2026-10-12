@@ -8,8 +8,9 @@ import logging
 import math
 import time
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, Final, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, override
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import callback
@@ -326,6 +327,15 @@ class _SirenStop(NamedTuple):
     monotonic: float
 
 
+class _WebSocketConnectionStateCallback(partial[None]):
+    """Adapt the API's positional boolean to the coordinator's named argument."""
+
+    @override
+    def __call__(self, connected: bool) -> None:
+        """Forward the connection state using the coordinator's named argument."""
+        super().__call__(connected=connected)
+
+
 # A stopped siren is only guarded against a reading that was already in flight
 # when it was stopped. A request does not outlive a poll interval or two, so
 # the guard does not either.
@@ -567,6 +577,16 @@ class UnifiProtectCoordinator(UnifiBaseCoordinator):
         self._ws_parse_warned = False
         self._ws_event_parse_warned = False
         self._ws_event_error_warned: bool = False
+        self._on_devices_connection_state_change = callback(
+            _WebSocketConnectionStateCallback(
+                self._on_websocket_connection_state_change, "devices"
+            )
+        )
+        self._on_events_connection_state_change = callback(
+            _WebSocketConnectionStateCallback(
+                self._on_websocket_connection_state_change, "events"
+            )
+        )
 
         # WebSocket health signal (task 5, hardened by review finding 1):
         # there was previously no way to tell "connected and delivering"
@@ -1271,27 +1291,6 @@ class UnifiProtectCoordinator(UnifiBaseCoordinator):
         self._recompute_ws_health_rollup()
 
     @callback
-    def _on_devices_connection_state_change(self, connected: bool) -> None:
-        """
-        Adapt the devices subscription's connect/disconnect callback.
-
-        See `_on_websocket_connection_state_change`; kept as its own bound
-        method (rather than e.g. `functools.partial`) so it still satisfies
-        `ProtectWebSocket.subscribe_with_callback`'s `Callable[[bool], None]`
-        contract exactly.
-        """
-        self._on_websocket_connection_state_change("devices", connected=connected)
-
-    @callback
-    def _on_events_connection_state_change(self, connected: bool) -> None:
-        """
-        Adapt the events subscription's connect/disconnect callback.
-
-        See `_on_devices_connection_state_change`.
-        """
-        self._on_websocket_connection_state_change("events", connected=connected)
-
-    @callback
     def _on_websocket_connection_state_change(
         self, stream: str, *, connected: bool
     ) -> None:
@@ -1299,7 +1298,7 @@ class UnifiProtectCoordinator(UnifiBaseCoordinator):
         Track WS connect/reconnect/disconnect transitions for `stream`.
 
         `stream` is "devices" or "events" - each subscription is registered
-        with its own bound wrapper (`_on_devices_connection_state_change` /
+        with its own typed callback (`_on_devices_connection_state_change` /
         `_on_events_connection_state_change`) so this always knows which one
         transitioned, rather than the two subscriptions clobbering one
         shared flag (review finding 1: that let a devices-only reconnect

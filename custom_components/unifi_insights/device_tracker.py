@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.device_tracker import ScannerEntity
 from homeassistant.components.device_tracker.const import SourceType
 from homeassistant.core import callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -22,7 +23,8 @@ from .const import (
     MOBILITY_DEVICE_PREFIX,
 )
 from .coordinators import UnifiFacadeCoordinator
-from .entity import get_client_type as _get_client_type, get_field
+from .entity import get_client_type as _get_client_type
+from .entity import get_field
 from .helpers import async_get_device_entry
 from .mobility_entity import async_setup_mobility_trackers
 

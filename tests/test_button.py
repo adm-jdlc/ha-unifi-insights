@@ -1486,6 +1486,7 @@ class TestSetupEntryPoeButtons:
         }
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.async_create_background_task.side_effect = (
             lambda hass, target, name: hass.async_create_background_task(target, name)
         )
@@ -1606,6 +1607,7 @@ class TestSetupEntryPoeButtons:
         }
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.async_create_background_task.side_effect = (
             lambda hass, target, name: hass.async_create_background_task(target, name)
         )
@@ -1665,19 +1667,31 @@ class TestGenerateVoucherButton:
         return coord
 
     def test_init_and_properties(self, mock_coordinator):
-        button = UnifiGenerateVoucherButton(mock_coordinator, "default")
-        assert button.unique_id == "default_generate_voucher"
+        button = UnifiGenerateVoucherButton(
+            mock_coordinator,
+            "default",
+            unique_id="console_default_generate_voucher",
+        )
+        assert button.unique_id == "console_default_generate_voucher"
         assert button.translation_key == "generate_voucher"
         assert button.available is True
         assert button.has_entity_name is True
 
     def test_available(self, mock_coordinator):
-        button = UnifiGenerateVoucherButton(mock_coordinator, "default")
+        button = UnifiGenerateVoucherButton(
+            mock_coordinator,
+            "default",
+            unique_id="console_default_generate_voucher",
+        )
         mock_coordinator.vouchers_available.return_value = False
         assert button.available is False
 
     async def test_async_press_success(self, mock_coordinator):
-        button = UnifiGenerateVoucherButton(mock_coordinator, "default")
+        button = UnifiGenerateVoucherButton(
+            mock_coordinator,
+            "default",
+            unique_id="console_default_generate_voucher",
+        )
         await button.async_press()
         mock_coordinator.get_voucher_settings.assert_called_once_with("default")
         mock_coordinator.async_generate_voucher.assert_awaited_once_with(
@@ -1689,13 +1703,21 @@ class TestGenerateVoucherButton:
         )
 
     async def test_async_press_empty_result_raises_error(self, mock_coordinator):
-        button = UnifiGenerateVoucherButton(mock_coordinator, "default")
+        button = UnifiGenerateVoucherButton(
+            mock_coordinator,
+            "default",
+            unique_id="console_default_generate_voucher",
+        )
         mock_coordinator.async_generate_voucher.return_value = []
         with pytest.raises(HomeAssistantError, match="UniFi returned no voucher"):
             await button.async_press()
 
     async def test_async_press_coordinator_error_raises_error(self, mock_coordinator):
-        button = UnifiGenerateVoucherButton(mock_coordinator, "default")
+        button = UnifiGenerateVoucherButton(
+            mock_coordinator,
+            "default",
+            unique_id="console_default_generate_voucher",
+        )
         mock_coordinator.async_generate_voucher.side_effect = RuntimeError(
             "API failure"
         )
@@ -1706,6 +1728,7 @@ class TestGenerateVoucherButton:
 
     async def test_discovery_and_deduplication(self, hass, mock_coordinator):
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.async_create_background_task.side_effect = (
             lambda hass, target, name: hass.async_create_background_task(target, name)
         )
@@ -1729,7 +1752,7 @@ class TestGenerateVoucherButton:
             e for e in added_entities if isinstance(e, UnifiGenerateVoucherButton)
         ]
         assert len(voucher_buttons) == 1
-        assert voucher_buttons[0].unique_id == "default_generate_voucher"
+        assert voucher_buttons[0].unique_id == "console_default_generate_voucher"
 
         # Deduplication
         prev_count = len(added_entities)
@@ -1785,7 +1808,11 @@ class TestGenerateVoucherButton:
         settings.upload_limit_mbps = 0.5
         settings.data_limit_mb = 2048
 
-        button = UnifiGenerateVoucherButton(facade, "default")
+        button = UnifiGenerateVoucherButton(
+            facade,
+            "default",
+            unique_id="console_default_generate_voucher",
+        )
         await button.async_press()
 
         assert len(session.requests) == 1

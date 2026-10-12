@@ -28,6 +28,8 @@ from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import site_internet_activity_sensor
+from .console_identity import resolve_console_namespace
 from .const import (
     ATTR_NVR_ID,
     ATTR_NVR_NAME,
@@ -61,20 +63,12 @@ from .entity import (
 from .entity import (
     get_client_type as _get_client_type,
 )
+from .helpers import async_migrate_site_entity
 from .innerspace_entity import (
     _discover_innerspace_sensors,
 )
 from .mobility_entity import async_setup_mobility_sensors
 from .protect_security_entity import discover_protect_security_sensors
-from .site_internet_activity_sensor import (
-    SITE_INTERNET_ACTIVITY_SENSOR_TYPES as SITE_INTERNET_ACTIVITY_SENSOR_TYPES,
-)
-from .site_internet_activity_sensor import (
-    UnifiSiteInternetActivitySensor as UnifiSiteInternetActivitySensor,
-)
-from .site_internet_activity_sensor import (
-    UnifiSiteInternetActivitySensorEntityDescription as UnifiSiteInternetActivitySensorEntityDescription,
-)
 from .site_internet_activity_sensor import (
     _discover_site_internet_activity_sensors,
 )
@@ -96,6 +90,17 @@ from homeassistant.helpers.entity import DeviceInfo
 
 from .carrier_fabric_data import CarrierFabricData
 from .carrier_fabric_sensor import async_setup_carrier_fabric_sensors
+
+# Preserve these public sensor-module exports without redundant import aliases.
+SITE_INTERNET_ACTIVITY_SENSOR_TYPES = (
+    site_internet_activity_sensor.SITE_INTERNET_ACTIVITY_SENSOR_TYPES
+)
+UnifiSiteInternetActivitySensor = (
+    site_internet_activity_sensor.UnifiSiteInternetActivitySensor
+)
+UnifiSiteInternetActivitySensorEntityDescription = (
+    site_internet_activity_sensor.UnifiSiteInternetActivitySensorEntityDescription
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1322,6 +1327,49 @@ def _discover_protect_sensors(
                     )
 
 
+def _is_owned_port_sensor(
+    entity: er.RegistryEntry,
+    config_entry_id: str,
+    known_device_ids: set[str],
+) -> bool:
+    """
+    Recognize physical port rows using the constructor's identity and ownership.
+
+    Matching description metadata also identifies ports of removed devices.
+    Without that metadata, require a device from the current API inventory;
+    incompatible or otherwise ambiguous rows are retained. Namespace, site,
+    and storage-path text containing ``_port_`` never establishes port identity.
+    """
+    if (
+        entity.domain != "sensor"
+        or entity.platform != DOMAIN
+        or entity.config_entry_id != config_entry_id
+        or is_storage_unique_id(entity.unique_id)
+    ):
+        return False
+    prefix, separator, port_idx = entity.unique_id.rpartition("_")
+    try:
+        if not separator or str(int(port_idx)) != port_idx:
+            return False
+    except ValueError:
+        return False
+    for description in (
+        *PORT_SENSOR_TYPES,
+        *PORT_RATE_SENSOR_TYPES,
+        *SFP_SENSOR_TYPES,
+    ):
+        ending = f"_{description.key}"
+        if not prefix.endswith(ending):
+            continue
+        device_id = prefix[: -len(ending)]
+        if not device_id:
+            return False
+        return entity.translation_key == description.translation_key or (
+            entity.translation_key in (None, "") and device_id in known_device_ids
+        )
+    return False
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: UnifiInsightsConfigEntry | CarrierFabricConfigEntry,
@@ -1397,28 +1445,53 @@ async def async_setup_entry(
                     )
 
         # Add site-level client count sensors
+        namespace = resolve_console_namespace(config_entry)
         clients_by_site = coordinator.data.get("clients", {})
         if isinstance(clients_by_site, dict):
             for site_id in clients_by_site:
                 for site_desc in SITE_CLIENT_SENSOR_TYPES:
                     site_key = (site_id, site_desc.key)
                     if site_key not in known_sensor_keys:
-                        known_sensor_keys.add(site_key)
-                        entities.append(
-                            UnifiSiteClientSensor(
-                                coordinator=coordinator,
-                                description=site_desc,
-                                site_id=site_id,
-                            )
+                        unique_id = async_migrate_site_entity(
+                            hass,
+                            config_entry,
+                            "sensor",
+                            namespace,
+                            site_id,
+                            site_desc.key,
                         )
+                        if unique_id is None:
+                            continue
+                        entity = UnifiSiteClientSensor(
+                            coordinator=coordinator,
+                            description=site_desc,
+                            site_id=site_id,
+                            unique_id=unique_id,
+                        )
+                        known_sensor_keys.add(site_key)
+                        entities.append(entity)
 
         # Add site-level internet activity rolling-window sensors
         entities.extend(
-            _discover_site_internet_activity_sensors(coordinator, known_sensor_keys)
+            _discover_site_internet_activity_sensors(
+                coordinator,
+                known_sensor_keys,
+                hass=hass,
+                entry=config_entry,
+                namespace=namespace,
+            )
         )
 
         # Add hotspot voucher management sensors
-        entities.extend(discover_voucher_sensors(coordinator, known_sensor_keys))
+        entities.extend(
+            discover_voucher_sensors(
+                coordinator,
+                known_sensor_keys,
+                hass=hass,
+                entry=config_entry,
+                namespace=namespace,
+            )
+        )
 
         # Add per-WiFi-network connected client count sensors
         wifi_by_site = coordinator.data.get("wifi", {})
@@ -1468,14 +1541,30 @@ async def async_setup_entry(
 
     # Clean up stale port entities from previous runs
     created_uids = {getattr(e, "unique_id", None) for e in initial_entities}
+    devices_by_site = (
+        coordinator.data.get("devices", {})
+        if isinstance(coordinator.data, dict)
+        else {}
+    )
+    known_device_ids = (
+        {
+            device_id
+            for devices in devices_by_site.values()
+            if isinstance(devices, dict)
+            for device_id, device_data in devices.items()
+            if isinstance(device_id, str)
+            and device_id
+            and isinstance(device_data, dict)
+        }
+        if isinstance(devices_by_site, dict)
+        else set()
+    )
     ent_reg = er.async_get(hass)
     stale = [
         entry
         for entry in er.async_entries_for_config_entry(ent_reg, config_entry.entry_id)
-        if entry.domain == "sensor"
-        and "_port_" in entry.unique_id
-        and not is_storage_unique_id(entry.unique_id)
-        and entry.unique_id not in created_uids
+        if entry.unique_id not in created_uids
+        and _is_owned_port_sensor(entry, config_entry.entry_id, known_device_ids)
     ]
     for entry in stale:
         _LOGGER.debug("Removing stale port sensor entity: %s", entry.unique_id)
@@ -2241,13 +2330,15 @@ class UnifiSiteClientSensor(CoordinatorEntity[UnifiFacadeCoordinator], SensorEnt
         coordinator: UnifiFacadeCoordinator,
         description: UnifiInsightsSensorEntityDescription,
         site_id: str,
+        *,
+        unique_id: str,
     ) -> None:
         """Initialize the site-level client sensor."""
         super().__init__(coordinator)
         self.entity_description = description
         self._site_id = site_id
 
-        self._attr_unique_id = f"{site_id}_{description.key}"
+        self._attr_unique_id = unique_id
         self._attr_device_info = DeviceInfo(**self._build_device_info())  # type: ignore[typeddict-item]
 
     def _build_device_info(self) -> dict[str, Any]:

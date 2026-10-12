@@ -2591,7 +2591,7 @@ class TestUnifiDeviceCoordinator:
             side_effect=UniFiAuthenticationError("Forbidden", status_code=403)
         )
 
-        with pytest.raises(UpdateFailed, match="^Access forbidden for site"):
+        with pytest.raises(UpdateFailed, match=r"^Access forbidden for site"):
             await coordinator._async_update_data()
 
         assert coordinator._available is False
@@ -4844,7 +4844,7 @@ class TestUnifiProtectCoordinator:
         `on_connection_state_change` callback (see `async_start_websocket`)
         updates only the devices stream's health entry.
         """
-        coordinator._on_devices_connection_state_change(True)
+        coordinator._on_devices_connection_state_change(connected=True)
 
         assert coordinator.websocket_health["devices"]["connected"] is True
         assert coordinator.websocket_health["events"]["connected"] is False
@@ -4856,7 +4856,7 @@ class TestUnifiProtectCoordinator:
         `on_connection_state_change` callback updates only the events
         stream's health entry.
         """
-        coordinator._on_events_connection_state_change(True)
+        coordinator._on_events_connection_state_change(connected=True)
 
         assert coordinator.websocket_health["events"]["connected"] is True
         assert coordinator.websocket_health["devices"]["connected"] is False
@@ -6934,7 +6934,7 @@ class TestUnifiFacadeCoordinator:
             "branch",
             "60a1b2c3d4e5f67890123456",
             1,
-            True,
+            state=True,
             cycle_enabled=False,
             current_device={
                 "id": "device1",
@@ -8663,7 +8663,8 @@ class TestUnifiInsightsInnerSpaceCoordinator:
             site_name: str, interval: str, *, start_ms: int, end_ms: int
         ) -> list[dict[str, int]]:
             if interval == "hourly":
-                raise UniFiTimeoutError("Hourly timeout")
+                msg = "Hourly timeout"
+                raise UniFiTimeoutError(msg)
             return []
 
         mock_network_client.reports.get_site_report = AsyncMock(
@@ -8680,7 +8681,8 @@ class TestUnifiInsightsInnerSpaceCoordinator:
             site_name: str, interval: str, *, start_ms: int, end_ms: int
         ) -> list[dict[str, int]]:
             if interval == "daily":
-                raise UniFiTimeoutError("Daily timeout")
+                msg = "Daily timeout"
+                raise UniFiTimeoutError(msg)
             return []
 
         mock_network_client.reports.get_site_report = AsyncMock(side_effect=_fail_daily)

@@ -5,12 +5,23 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
+
+import pytest
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.unifi_insights.api.protect.models.camera import (
     CameraState,
     CameraType,
     RecordingMode,
 )
+from custom_components.unifi_insights.console_identity import (
+    build_legacy_site_unique_id,
+    build_site_unique_id,
+)
+from custom_components.unifi_insights.const import CONF_CONSOLE_ID, DOMAIN
 from custom_components.unifi_insights.dashboard_contract_utils import (
     content_revision,
     enum_str,
@@ -18,6 +29,7 @@ from custom_components.unifi_insights.dashboard_contract_utils import (
     utc_iso,
 )
 from custom_components.unifi_insights.internet_activity_snapshot import (
+    WINDOWS,
     build_internet_activity_snapshot,
     build_unavailable_internet_activity,
 )
@@ -43,8 +55,16 @@ from custom_components.unifi_insights.timeline import (
     build_unavailable_timeline,
 )
 
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
 
 class _FakeEntityRegistry:
+    def async_get(self, entity_id):
+        return SimpleNamespace(
+            config_entry_id="entry-1", translation_key="internet_download_1h"
+        )
+
     def async_get_entity_id(
         self,
         domain: str,
@@ -168,6 +188,138 @@ def test_build_internet_activity_snapshot() -> None:
     assert snapshot["windows"]["1h"]["download_bytes"] == 1000
     assert snapshot["windows"]["1h"]["upload_bytes"] == 500
     assert snapshot["entity_ids"]["download_1h"] == "sensor.internet_download_1h"
+
+
+async def test_internet_activity_snapshot_namespaces_shared_site_registry_rows(
+    hass: HomeAssistant, entity_registry: er.EntityRegistry
+) -> None:
+    """Each console's complete activity snapshot resolves only its owned rows."""
+    snapshots = []
+    expected_ids = []
+    for index, namespace in enumerate(("console_a", "console_b"), start=1):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            entry_id=f"entry_{namespace}",
+            unique_id=namespace,
+            data={CONF_CONSOLE_ID: namespace},
+        )
+        entry.add_to_hass(hass)
+        owned_ids = {}
+        for direction in ("download", "upload"):
+            for window in WINDOWS:
+                key = f"internet_{direction}_{window}"
+                row = entity_registry.async_get_or_create(
+                    "sensor",
+                    DOMAIN,
+                    build_site_unique_id(namespace, "site-1", key),
+                    config_entry=entry,
+                    translation_key=key,
+                )
+                owned_ids[f"{direction}_{window}"] = row.entity_id
+        data = _base_data()
+        data["internet_activity"]["site-1"] = {
+            window: {"rx_bytes": index * 1000, "tx_bytes": index * 500}
+            for window in WINDOWS
+        }
+        registry_before = dict(entity_registry.entities)
+
+        snapshot = build_internet_activity_snapshot(
+            data,
+            entry_id=entry.entry_id,
+            site_id="site-1",
+            entity_registry=entity_registry,
+            namespace=namespace,
+        )
+
+        assert snapshot["status"] == "ok"
+        assert snapshot["entry_id"] == entry.entry_id
+        assert snapshot["site_id"] == "site-1"
+        assert snapshot["entity_ids"] == owned_ids
+        assert snapshot["windows"]["1h"]["download_bytes"] == index * 1000
+        assert all(
+            entity_registry.async_get(entity_id).config_entry_id == entry.entry_id
+            for entity_id in snapshot["entity_ids"].values()
+        )
+        assert dict(entity_registry.entities) == registry_before
+        assert set(data["sites"]) == {"site-1"}
+        snapshots.append(snapshot)
+        expected_ids.append(set(owned_ids.values()))
+
+    assert len(expected_ids[0]) == len(expected_ids[1]) == 8
+    assert expected_ids[0].isdisjoint(expected_ids[1])
+    assert snapshots[0]["revision"] != snapshots[1]["revision"]
+
+
+@pytest.mark.parametrize(
+    ("legacy_owner", "target_owner", "expected_candidate"),
+    [
+        ("own", "foreign", "legacy"),
+        ("own", "own", "legacy"),
+        ("foreign", "own", "target"),
+        ("foreign", "foreign", None),
+        (None, "foreign", None),
+        (None, "own", "target"),
+    ],
+)
+async def test_internet_activity_snapshot_preserves_candidate_ownership(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    legacy_owner: str | None,
+    target_owner: str,
+    expected_candidate: str | None,
+) -> None:
+    """Occupied identities retain an owned legacy row or exclude foreign rows."""
+    entries = {}
+    for owner, namespace in (("own", "console_a"), ("foreign", "console_b")):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            unique_id=namespace,
+            data={CONF_CONSOLE_ID: namespace},
+        )
+        entry.add_to_hass(hass)
+        entries[owner] = entry
+    key = "internet_download_1h"
+    candidates = {}
+    if legacy_owner is not None:
+        candidates["legacy"] = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            build_legacy_site_unique_id("site-1", key),
+            config_entry=entries[legacy_owner],
+            translation_key=key,
+        )
+    candidates["target"] = entity_registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        build_site_unique_id("console_a", "site-1", key),
+        config_entry=entries[target_owner],
+        translation_key=key,
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    candidates["target"] = entity_registry.async_update_entity(
+        candidates["target"].entity_id, name="Customized activity sensor"
+    )
+    registry_before = dict(entity_registry.entities)
+
+    snapshot = build_internet_activity_snapshot(
+        _base_data(),
+        entry_id=entries["own"].entry_id,
+        site_id="site-1",
+        entity_registry=entity_registry,
+        namespace="console_a",
+    )
+
+    expected = (
+        {"download_1h": candidates[expected_candidate].entity_id}
+        if expected_candidate is not None
+        else {}
+    )
+    assert snapshot["entity_ids"] == expected
+    assert dict(entity_registry.entities) == registry_before
+    assert all(
+        entity_registry.async_get(entity_id).config_entry_id == entries["own"].entry_id
+        for entity_id in snapshot["entity_ids"].values()
+    )
 
 
 def test_build_performance_snapshot() -> None:
@@ -689,4 +841,3 @@ def test_protect_snapshot_handles_str_enums_and_is_connected_fallback() -> None:
     assert enum_str(42) == "42"
     assert is_protect_device_connected({"is_connected": True}) is True
     assert is_protect_device_connected({"isConnected": False}) is False
-

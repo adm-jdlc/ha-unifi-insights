@@ -64,23 +64,40 @@ def mock_coordinator():
     return coord
 
 
-def test_discover_voucher_sensors(mock_coordinator):
+def test_discover_voucher_sensors(hass, mock_coordinator, mock_config_entry):
     known_keys = set()
-    entities = discover_voucher_sensors(mock_coordinator, known_keys)
+    entities = discover_voucher_sensors(
+        mock_coordinator,
+        known_keys,
+        hass=hass,
+        entry=mock_config_entry,
+        namespace="console",
+    )
     assert len(entities) == 3
     assert {e.unique_id for e in entities} == {
-        "default_latest_voucher_code",
-        "default_latest_voucher_expiration",
-        "default_active_vouchers",
+        "console_default_latest_voucher_code",
+        "console_default_latest_voucher_expiration",
+        "console_default_active_vouchers",
     }
     # Deduplication
-    entities2 = discover_voucher_sensors(mock_coordinator, known_keys)
+    entities2 = discover_voucher_sensors(
+        mock_coordinator,
+        known_keys,
+        hass=hass,
+        entry=mock_config_entry,
+        namespace="console",
+    )
     assert len(entities2) == 0
 
 
 def test_sensor_availability(mock_coordinator):
     desc = VOUCHER_SENSOR_TYPES[0]
-    sensor = UnifiVoucherSensor(mock_coordinator, desc, "default")
+    sensor = UnifiVoucherSensor(
+        mock_coordinator,
+        desc,
+        "default",
+        unique_id="console_default_" + desc.key,
+    )
     assert sensor.available is True
     mock_coordinator.vouchers_available.return_value = False
     assert sensor.available is False
@@ -88,7 +105,12 @@ def test_sensor_availability(mock_coordinator):
 
 def test_sensor_device_info(mock_coordinator):
     desc = VOUCHER_SENSOR_TYPES[0]
-    sensor = UnifiVoucherSensor(mock_coordinator, desc, "default")
+    sensor = UnifiVoucherSensor(
+        mock_coordinator,
+        desc,
+        "default",
+        unique_id="console_default_" + desc.key,
+    )
     assert sensor.device_info is not None
     assert ("unifi_insights", "site_default") in sensor.device_info.get(
         "identifiers", set()
@@ -97,7 +119,12 @@ def test_sensor_device_info(mock_coordinator):
 
 def test_latest_voucher_code_sensor(mock_coordinator):
     desc = next(d for d in VOUCHER_SENSOR_TYPES if d.key == "latest_voucher_code")
-    sensor = UnifiVoucherSensor(mock_coordinator, desc, "default")
+    sensor = UnifiVoucherSensor(
+        mock_coordinator,
+        desc,
+        "default",
+        unique_id="console_default_" + desc.key,
+    )
     assert sensor.native_value == "1111111111"
     attrs = sensor.extra_state_attributes
     assert attrs is not None
@@ -115,14 +142,24 @@ def test_latest_voucher_code_sensor(mock_coordinator):
 def test_latest_voucher_code_empty(mock_coordinator):
     mock_coordinator.data["latest_vouchers"] = {}
     desc = next(d for d in VOUCHER_SENSOR_TYPES if d.key == "latest_voucher_code")
-    sensor = UnifiVoucherSensor(mock_coordinator, desc, "default")
+    sensor = UnifiVoucherSensor(
+        mock_coordinator,
+        desc,
+        "default",
+        unique_id="console_default_" + desc.key,
+    )
     assert sensor.native_value is None
     assert sensor.extra_state_attributes is None
 
 
 def test_latest_voucher_expiration_sensor(mock_coordinator):
     desc = next(d for d in VOUCHER_SENSOR_TYPES if d.key == "latest_voucher_expiration")
-    sensor = UnifiVoucherSensor(mock_coordinator, desc, "default")
+    sensor = UnifiVoucherSensor(
+        mock_coordinator,
+        desc,
+        "default",
+        unique_id="console_default_" + desc.key,
+    )
     val = sensor.native_value
     assert isinstance(val, datetime)
     assert val == datetime(2026, 10, 10, 0, 0, tzinfo=UTC)
@@ -131,14 +168,24 @@ def test_latest_voucher_expiration_sensor(mock_coordinator):
 def test_latest_voucher_expiration_empty(mock_coordinator):
     mock_coordinator.data["latest_vouchers"] = {}
     desc = next(d for d in VOUCHER_SENSOR_TYPES if d.key == "latest_voucher_expiration")
-    sensor = UnifiVoucherSensor(mock_coordinator, desc, "default")
+    sensor = UnifiVoucherSensor(
+        mock_coordinator,
+        desc,
+        "default",
+        unique_id="console_default_" + desc.key,
+    )
     assert sensor.native_value is None
 
 
 def test_active_vouchers_sensor(mock_coordinator, freezer):
     freezer.move_to("2026-10-09T10:00:00Z")
     desc = next(d for d in VOUCHER_SENSOR_TYPES if d.key == "active_vouchers")
-    sensor = UnifiVoucherSensor(mock_coordinator, desc, "default")
+    sensor = UnifiVoucherSensor(
+        mock_coordinator,
+        desc,
+        "default",
+        unique_id="console_default_" + desc.key,
+    )
     assert sensor.native_value == 1
     assert sensor.extra_state_attributes is None
 

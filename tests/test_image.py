@@ -71,6 +71,7 @@ class TestAsyncSetupEntry:
     ) -> None:
         """Only networks with a resolved QR payload get an image entity."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = mock_coordinator
 
@@ -90,6 +91,7 @@ class TestAsyncSetupEntry:
         mock_coordinator.data["wifi"]["site1"]["wifi1"].pop("qr_code")
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = mock_coordinator
 
@@ -106,6 +108,7 @@ class TestAsyncSetupEntry:
         mock_coordinator.data["wifi"] = "not-a-dict"
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = mock_coordinator
 
@@ -792,6 +795,7 @@ class TestUnifiFloorPlanImage:
             "s1": {"w1": {"id": "w1", "name": "WiFi Net", "qr_code": "WIFI:..."}}
         }
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = innerspace_coordinator
 
@@ -823,6 +827,7 @@ class TestUnifiFloorPlanImage:
             hass.async_create_task(platform.async_add_entities(entities))
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data.coordinator = innerspace_coordinator
         await async_setup_entry(hass, mock_entry, add_entities)
         await hass.async_block_till_done()
@@ -907,6 +912,7 @@ class TestUnifiFloorPlanImage:
         fp_dict[123] = {"name": "Bad ID"}
 
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = innerspace_coordinator
 
@@ -952,8 +958,13 @@ class TestUnifiVoucherQrCodeImage:
     def test_init_and_properties(
         self, hass: HomeAssistant, mock_coordinator: MagicMock
     ) -> None:
-        entity = UnifiVoucherQrCodeImage(hass, mock_coordinator, "default")
-        assert entity.unique_id == "default_voucher_qr_code"
+        entity = UnifiVoucherQrCodeImage(
+            hass,
+            mock_coordinator,
+            "default",
+            unique_id="console_default_voucher_qr_code",
+        )
+        assert entity.unique_id == "console_default_voucher_qr_code"
         assert entity.translation_key == "voucher_qr_code"
         assert entity.content_type == "image/png"
         assert entity.available is True
@@ -965,7 +976,12 @@ class TestUnifiVoucherQrCodeImage:
     async def test_image_rendering_and_caching(
         self, hass: HomeAssistant, mock_coordinator: MagicMock
     ) -> None:
-        entity = UnifiVoucherQrCodeImage(hass, mock_coordinator, "default")
+        entity = UnifiVoucherQrCodeImage(
+            hass,
+            mock_coordinator,
+            "default",
+            unique_id="console_default_voucher_qr_code",
+        )
         img_bytes = await entity.async_image()
         assert img_bytes is not None
         assert img_bytes.startswith(b"\x89PNG")
@@ -978,7 +994,12 @@ class TestUnifiVoucherQrCodeImage:
     async def test_payload_disappearance(
         self, hass: HomeAssistant, mock_coordinator: MagicMock
     ) -> None:
-        entity = UnifiVoucherQrCodeImage(hass, mock_coordinator, "default")
+        entity = UnifiVoucherQrCodeImage(
+            hass,
+            mock_coordinator,
+            "default",
+            unique_id="console_default_voucher_qr_code",
+        )
         assert await entity.async_image() is not None
 
         # Remove latest voucher
@@ -991,7 +1012,12 @@ class TestUnifiVoucherQrCodeImage:
     def test_availability_vouchers_unavailable(
         self, hass: HomeAssistant, mock_coordinator: MagicMock
     ) -> None:
-        entity = UnifiVoucherQrCodeImage(hass, mock_coordinator, "default")
+        entity = UnifiVoucherQrCodeImage(
+            hass,
+            mock_coordinator,
+            "default",
+            unique_id="console_default_voucher_qr_code",
+        )
         mock_coordinator.vouchers_available.return_value = False
         assert entity.available is False
 
@@ -1000,6 +1026,7 @@ class TestUnifiVoucherQrCodeImage:
         self, hass: HomeAssistant, mock_coordinator: MagicMock
     ) -> None:
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.runtime_data = MagicMock()
         mock_entry.runtime_data.coordinator = mock_coordinator
 
@@ -1017,7 +1044,7 @@ class TestUnifiVoucherQrCodeImage:
             e for e in added_entities if isinstance(e, UnifiVoucherQrCodeImage)
         ]
         assert len(voucher_images) == 1
-        assert voucher_images[0].unique_id == "default_voucher_qr_code"
+        assert voucher_images[0].unique_id == "console_default_voucher_qr_code"
 
         # Deduplication
         prev_count = len(added_entities)
@@ -1041,7 +1068,12 @@ class TestUnifiVoucherQrCodeImage:
         mock_coordinator.data["latest_vouchers"] = {"default": record}
         mock_coordinator.data["vouchers"] = {"default": {}}
 
-        entity = UnifiVoucherQrCodeImage(hass, mock_coordinator, "default")
+        entity = UnifiVoucherQrCodeImage(
+            hass,
+            mock_coordinator,
+            "default",
+            unique_id="console_default_voucher_qr_code",
+        )
         entity._reschedule_expiration_timer()
 
         assert entity.available is True
@@ -1072,7 +1104,12 @@ class TestUnifiVoucherQrCodeImage:
     ) -> None:
         """Test timer reschedule branches for expired or missing deadline."""
         mock_coordinator.vouchers_available.return_value = True
-        entity = UnifiVoucherQrCodeImage(hass, mock_coordinator, "default")
+        entity = UnifiVoucherQrCodeImage(
+            hass,
+            mock_coordinator,
+            "default",
+            unique_id="console_default_voucher_qr_code",
+        )
 
         # 1. Non-mapping latest_vouchers
         mock_coordinator.data["latest_vouchers"] = None
@@ -1141,7 +1178,12 @@ class TestUnifiVoucherQrCodeImage:
                 "expiresAt": "2099-01-01T00:00:00Z",
             }
         }
-        entity = UnifiVoucherQrCodeImage(hass, mock_coordinator, "default")
+        entity = UnifiVoucherQrCodeImage(
+            hass,
+            mock_coordinator,
+            "default",
+            unique_id="console_default_voucher_qr_code",
+        )
         entity.hass = None  # type: ignore[assignment]
         entity._reschedule_expiration_timer()
         assert entity._expiration_unsub is None
@@ -1153,7 +1195,12 @@ class TestUnifiVoucherQrCodeImage:
         """Expiring before any payload was observed keeps the image timestamp."""
         mock_coordinator.vouchers_available.return_value = True
         mock_coordinator.data["latest_vouchers"] = {}
-        entity = UnifiVoucherQrCodeImage(hass, mock_coordinator, "default")
+        entity = UnifiVoucherQrCodeImage(
+            hass,
+            mock_coordinator,
+            "default",
+            unique_id="console_default_voucher_qr_code",
+        )
         assert entity._last_observed_payload is None
         before = entity._attr_image_last_updated
         with patch.object(entity, "async_write_ha_state") as write_state:
@@ -1173,7 +1220,12 @@ class TestUnifiVoucherQrCodeImage:
         mock_coordinator.data["latest_vouchers"] = {
             "default": {"id": "v1", "code": "1234567890", "expired": False}
         }
-        entity = UnifiVoucherQrCodeImage(hass, mock_coordinator, "default")
+        entity = UnifiVoucherQrCodeImage(
+            hass,
+            mock_coordinator,
+            "default",
+            unique_id="console_default_voucher_qr_code",
+        )
         if hasattr(entity, "async_added_to_hass"):
             await entity.async_added_to_hass()
         initial_ts = entity.image_last_updated

@@ -97,9 +97,7 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
                     await resources.async_create_item(
                         {"url": versioned_url, "res_type": "module"}
                     )
-                elif (
-                    existing["url"] != versioned_url or existing["type"] != "module"
-                ):
+                elif existing["url"] != versioned_url or existing["type"] != "module":
                     await resources.async_update_item(
                         existing["id"], {"url": versioned_url, "res_type": "module"}
                     )

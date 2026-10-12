@@ -532,7 +532,12 @@ async def test_real_model_refresh_does_not_redisplay_expired_qr(
         by_alias=True, exclude_none=False
     )
     facade._aggregate_data()
-    image = UnifiVoucherQrCodeImage(hass, facade, "site1")
+    image = UnifiVoucherQrCodeImage(
+        hass,
+        facade,
+        "site1",
+        unique_id="console_site1_voucher_qr_code",
+    )
     image.entity_id = "image.test_voucher"
     await image.async_added_to_hass()
     try:

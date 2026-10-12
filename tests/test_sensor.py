@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Ruaan Deysel
 """Tests for UniFi Insights sensors."""
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,14 +15,27 @@ from homeassistant.const import (
     UnitOfInformation,
     UnitOfTemperature,
 )
+from homeassistant.helpers.entity_registry import (
+    RegistryEntryDisabler,
+    RegistryEntryHider,
+)
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 if TYPE_CHECKING:
+    from homeassistant.components.sensor import SensorEntity
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers import entity_registry as er
 
+    from custom_components.unifi_insights.sensor import (
+        UnifiInsightsSensorEntityDescription,
+    )
+    from custom_components.unifi_insights.storage_entity import (
+        UnifiStorageSensorEntityDescription,
+    )
+
 from custom_components.unifi_insights.const import (
     CONF_CONNECTION_TYPE,
+    CONF_CONSOLE_ID,
     CONNECTION_TYPE_LOCAL,
     DOMAIN,
 )
@@ -66,6 +80,10 @@ from custom_components.unifi_insights.sensor import (
     bytes_to_megabits,
     format_uptime,
     get_network_device_temperature,
+)
+from custom_components.unifi_insights.storage_entity import (
+    STORAGE_SENSOR_TYPES,
+    UnifiStorageSensor,
 )
 from custom_components.unifi_insights.voucher_sensor import UnifiVoucherSensor
 from tests.fixtures.library_responses import (
@@ -2911,6 +2929,7 @@ class TestMigrateSensorUnits:
     def test_migrate_sets_refresh_flag_for_port_rx_bytes(self, hass, mock_config_entry):
         """Test migration sets refresh_initial_entity_options for port_rx_bytes."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.domain = "sensor"
         mock_entry.unique_id = "aa:bb:cc:dd:ee:ff_port_rx_bytes"
         mock_entry.entity_id = "sensor.device_port_rx_bytes"
@@ -2939,6 +2958,7 @@ class TestMigrateSensorUnits:
     def test_migrate_skips_non_sensor_entities(self, hass, mock_config_entry):
         """Test migration skips non-sensor domain entities."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.domain = "binary_sensor"
         mock_entry.unique_id = "aa:bb:cc:dd:ee:ff_port_rx_bytes"
         mock_entry.entity_id = "binary_sensor.something"
@@ -2963,6 +2983,7 @@ class TestMigrateSensorUnits:
     def test_migrate_skips_already_correct_units(self, hass, mock_config_entry):
         """Test migration skips entities whose suggested unit already matches."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.domain = "sensor"
         mock_entry.unique_id = "aa:bb:cc:dd:ee:ff_port_tx_bytes"
         mock_entry.entity_id = "sensor.device_port_tx_bytes"
@@ -2991,6 +3012,7 @@ class TestMigrateSensorUnits:
     def test_migrate_skips_unrelated_sensor_keys(self, hass, mock_config_entry):
         """Test migration skips sensors whose key has no suggested unit."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.domain = "sensor"
         mock_entry.unique_id = "aa:bb:cc:dd:ee:ff_cpu_utilization"
         mock_entry.entity_id = "sensor.device_cpu_utilization"
@@ -3015,6 +3037,7 @@ class TestMigrateSensorUnits:
     def test_migrate_handles_uplink_rate_sensors(self, hass, mock_config_entry):
         """Test migration sets refresh flag for uplink rate sensors."""
         mock_entry = MagicMock()
+        mock_entry.data = {"console_id": "console"}
         mock_entry.domain = "sensor"
         mock_entry.unique_id = "aa:bb:cc:dd:ee:ff_tx_rate"
         mock_entry.entity_id = "sensor.device_tx_rate"
@@ -3125,6 +3148,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.native_value == 3
 
@@ -3139,6 +3163,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.native_value == 2
 
@@ -3153,6 +3178,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.native_value == 1
 
@@ -3165,8 +3191,9 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
-        assert sensor.unique_id == "site1_site_total_clients"
+        assert sensor.unique_id == "console_site1_site_total_clients"
 
     async def test_available(self, hass: HomeAssistant, mock_coordinator_with_clients):
         """Test availability follows coordinator update success."""
@@ -3177,6 +3204,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.available is True
 
@@ -3194,6 +3222,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator_with_clients,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         # device2 is a UDM-Pro gateway, so the sensor should attach to it
         device_info = sensor.device_info
@@ -3228,6 +3257,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         device_info = sensor.device_info
         assert device_info is not None
@@ -3247,6 +3277,7 @@ class TestUnifiSiteClientSensor:
             coordinator=mock_coordinator,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.native_value == 0
 
@@ -3266,6 +3297,7 @@ class TestAsyncSetupEntrySiteClientSensors:
         }
 
         config_entry = MagicMock()
+        config_entry.data = {"console_id": "console"}
         config_entry.runtime_data = MagicMock()
         config_entry.runtime_data.mobility_coordinator = None
         config_entry.runtime_data.coordinator = mock_coordinator
@@ -3280,7 +3312,8 @@ class TestAsyncSetupEntrySiteClientSensors:
             patch(
                 "custom_components.unifi_insights.sensor.er.async_get",
                 return_value=MagicMock(
-                    async_entries_for_config_entry=MagicMock(return_value=[])
+                    async_entries_for_config_entry=MagicMock(return_value=[]),
+                    async_get_entity_id=MagicMock(return_value=None),
                 ),
             ),
             patch(
@@ -3306,6 +3339,7 @@ class TestAsyncSetupEntrySiteClientSensors:
         mock_coordinator.data["clients"] = {}
 
         config_entry = MagicMock()
+        config_entry.data = {"console_id": "console"}
         config_entry.runtime_data = MagicMock()
         config_entry.runtime_data.mobility_coordinator = None
         config_entry.runtime_data.coordinator = mock_coordinator
@@ -3320,7 +3354,8 @@ class TestAsyncSetupEntrySiteClientSensors:
             patch(
                 "custom_components.unifi_insights.sensor.er.async_get",
                 return_value=MagicMock(
-                    async_entries_for_config_entry=MagicMock(return_value=[])
+                    async_entries_for_config_entry=MagicMock(return_value=[]),
+                    async_get_entity_id=MagicMock(return_value=None),
                 ),
             ),
             patch(
@@ -3342,6 +3377,7 @@ class TestAsyncSetupEntrySiteClientSensors:
         mock_coordinator.data["wifi"] = "not-a-dict"
 
         config_entry = MagicMock()
+        config_entry.data = {"console_id": "console"}
         config_entry.runtime_data = MagicMock()
         config_entry.runtime_data.mobility_coordinator = None
         config_entry.runtime_data.coordinator = mock_coordinator
@@ -3356,7 +3392,8 @@ class TestAsyncSetupEntrySiteClientSensors:
             patch(
                 "custom_components.unifi_insights.sensor.er.async_get",
                 return_value=MagicMock(
-                    async_entries_for_config_entry=MagicMock(return_value=[])
+                    async_entries_for_config_entry=MagicMock(return_value=[]),
+                    async_get_entity_id=MagicMock(return_value=None),
                 ),
             ),
             patch(
@@ -3910,12 +3947,13 @@ class TestUnifiSiteInternetActivitySensor:
                 coordinator=coordinator,
                 description=desc,
                 site_id="site1",
+                unique_id="console_site1_" + desc.key,
             )
             assert "_attr_name" not in sensor.__dict__
             assert sensor.entity_description.name == desc.name
             assert isinstance(desc.name, str)
             assert desc.name.startswith("Internet ")
-            assert sensor.unique_id == f"site1_{desc.key}"
+            assert sensor.unique_id == f"console_site1_{desc.key}"
             assert sensor.available is True
             assert sensor.native_value == expected_keys[desc.key]
             assert sensor.extra_state_attributes == {
@@ -3925,7 +3963,9 @@ class TestUnifiSiteInternetActivitySensor:
                 "report_interval": desc.report_interval,
             }
 
-    def test_unavailable_when_section_unavailable_or_window_missing(self) -> None:
+    def test_unavailable_when_section_unavailable_or_window_missing(
+        self, hass, mock_config_entry
+    ) -> None:
         """Sensor is unavailable on failed refresh or missing window."""
         desc = SITE_INTERNET_ACTIVITY_SENSOR_TYPES[0]
         coordinator = MagicMock()
@@ -3942,6 +3982,7 @@ class TestUnifiSiteInternetActivitySensor:
             coordinator=coordinator,
             description=desc,
             site_id="site1",
+            unique_id="console_site1_" + desc.key,
         )
         assert sensor.available is True
 
@@ -3981,15 +4022,51 @@ class TestUnifiSiteInternetActivitySensor:
         assert sensor.native_value is None
         coordinator.data["internet_activity"]["site1"] = "not_a_dict"
         assert sensor.native_value is None
-        assert _discover_site_internet_activity_sensors(coordinator, set()) == []
+        assert (
+            _discover_site_internet_activity_sensors(
+                coordinator,
+                set(),
+                hass=hass,
+                entry=mock_config_entry,
+                namespace="console",
+            )
+            == []
+        )
         coordinator.data["internet_activity"] = {"site1": {"1h": {"rx_bytes": 100}}}
         known_keys: set[tuple[str, ...]] = set()
         assert (
-            len(_discover_site_internet_activity_sensors(coordinator, known_keys)) == 1
+            len(
+                _discover_site_internet_activity_sensors(
+                    coordinator,
+                    known_keys,
+                    hass=hass,
+                    entry=mock_config_entry,
+                    namespace="console",
+                )
+            )
+            == 1
         )
-        assert _discover_site_internet_activity_sensors(coordinator, known_keys) == []
+        assert (
+            _discover_site_internet_activity_sensors(
+                coordinator,
+                known_keys,
+                hass=hass,
+                entry=mock_config_entry,
+                namespace="console",
+            )
+            == []
+        )
         coordinator.data["internet_activity"] = "not_a_dict"
-        assert _discover_site_internet_activity_sensors(coordinator, set()) == []
+        assert (
+            _discover_site_internet_activity_sensors(
+                coordinator,
+                set(),
+                hass=hass,
+                entry=mock_config_entry,
+                namespace="console",
+            )
+            == []
+        )
         assert sensor.native_value is None
         coordinator.data = None
         assert sensor.native_value is None
@@ -4148,7 +4225,12 @@ class TestSensorAdditionalCoverageGaps:
         coordinator.device_available = True
         coordinator.data = {"clients": {"site1": None}}
         desc = SITE_CLIENT_SENSOR_TYPES[0]
-        sensor = UnifiSiteClientSensor(coordinator, desc, "site1")
+        sensor = UnifiSiteClientSensor(
+            coordinator,
+            desc,
+            "site1",
+            unique_id="console_site1_" + desc.key,
+        )
         assert sensor.native_value == 0
 
     def test_wifi_client_count_sensor_branches(self) -> None:
@@ -4216,7 +4298,10 @@ class TestSensorAdditionalCoverageGaps:
 
         mock_stale = MagicMock(
             domain="sensor",
-            unique_id="site1_device1_port_99_speed",
+            platform=DOMAIN,
+            config_entry_id=mock_config_entry.entry_id,
+            translation_key="port_speed",
+            unique_id="device1_port_speed_99",
             entity_id="sensor.stale_port",
         )
         mock_reg = MagicMock()
@@ -4257,6 +4342,7 @@ class TestSensorAdditionalCoverageGaps:
         listeners = []
         coordinator.async_add_listener = listeners.append
 
+        mock_config_entry.data = {"console_id": "console"}
         mock_config_entry.runtime_data = MagicMock(
             coordinator=coordinator, mobility_coordinator=None
         )
@@ -4268,7 +4354,9 @@ class TestSensorAdditionalCoverageGaps:
         with (
             patch(
                 "custom_components.unifi_insights.sensor.er.async_get",
-                return_value=MagicMock(),
+                return_value=MagicMock(
+                    async_get_entity_id=MagicMock(return_value=None)
+                ),
             ),
             patch(
                 "custom_components.unifi_insights.sensor.er.async_entries_for_config_entry",
@@ -4303,7 +4391,10 @@ class TestSensorAdditionalCoverageGaps:
 
         stale_port = MagicMock(
             domain="sensor",
-            unique_id="site1_device1_port_99_speed",
+            platform=DOMAIN,
+            config_entry_id=mock_config_entry.entry_id,
+            translation_key="port_speed",
+            unique_id="device1_port_speed_99",
             entity_id="sensor.stale_port",
         )
         storage_row = MagicMock(
@@ -4327,3 +4418,362 @@ class TestSensorAdditionalCoverageGaps:
 
         removed = [call.args[0] for call in mock_reg.async_remove.call_args_list]
         assert removed == ["sensor.stale_port"]
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+class TestStalePortCleanupNativeRegistry:
+    """Preserve ownership and logical rows during native physical-port cleanup."""
+
+    @pytest.fixture
+    def mock_config_entry(self) -> MockConfigEntry:
+        """Use a real synthetic config entry instead of this module's mock fixture."""
+        return MockConfigEntry(
+            domain=DOMAIN,
+            entry_id="synthetic_cleanup_entry",
+            unique_id="console_a",
+            data={
+                CONF_CONSOLE_ID: "console_a",
+                CONF_API_KEY: "synthetic_credential",
+            },
+        )
+
+    @pytest.fixture
+    def cleanup_coordinator(
+        self,
+        hass: HomeAssistant,
+        mock_coordinator: MagicMock,
+        mock_config_entry: MockConfigEntry,
+    ) -> MagicMock:
+        """Set up a registered entry with one device and no active port readings."""
+        mock_config_entry.add_to_hass(hass)
+        mock_coordinator.protect_client = None
+        mock_coordinator.data = {
+            "sites": {"site1": {"id": "site1"}},
+            "devices": {
+                "site1": {
+                    "device1": {
+                        "name": "Synthetic switch",
+                        "state": "ONLINE",
+                        "ports": [],
+                    }
+                }
+            },
+            "clients": {},
+            "vouchers": {},
+            "internet_activity": {},
+        }
+        mock_coordinator.async_add_listener.return_value = lambda: None
+        mock_config_entry.runtime_data = SimpleNamespace(
+            coordinator=mock_coordinator, mobility_coordinator=None
+        )
+        return mock_coordinator
+
+    @pytest.mark.parametrize(
+        ("namespace", "site_id"),
+        [
+            ("console_port_a", "site_shared"),
+            ("console_a", "site_port_shared"),
+        ],
+    )
+    @pytest.mark.parametrize("translation_key", [None, "incompatible_key"])
+    async def test_skipped_logical_rows_survive_port_cleanup(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        namespace: str,
+        site_id: str,
+        translation_key: str | None,
+    ) -> None:
+        """Keep skipped logical rows when namespace or site text contains _port_."""
+        hass.config_entries.async_update_entry(
+            mock_config_entry,
+            data={**mock_config_entry.data, CONF_CONSOLE_ID: namespace},
+        )
+        cleanup_coordinator.data["sites"] = {site_id: {"id": site_id}}
+        cleanup_coordinator.data["clients"] = {site_id: {}}
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            f"{namespace}_{site_id}_site_total_clients",
+            config_entry=mock_config_entry,
+            translation_key=translation_key,
+        )
+        row = entity_registry.async_update_entity(
+            row.entity_id,
+            name="Custom logical sensor",
+            disabled_by=RegistryEntryDisabler.USER,
+            hidden_by=RegistryEntryHider.USER,
+        )
+        added: list[SensorEntity] = []
+        await async_setup_entry(hass, mock_config_entry, added.extend)
+        assert row.unique_id not in {entity.unique_id for entity in added}
+        assert entity_registry.async_get(row.entity_id) == row
+
+    @pytest.mark.parametrize(
+        "description",
+        [*PORT_SENSOR_TYPES, *PORT_RATE_SENSOR_TYPES, *SFP_SENSOR_TYPES],
+        ids=lambda description: description.key,
+    )
+    async def test_removed_device_ports_still_clean_up(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        description: UnifiInsightsSensorEntityDescription,
+    ) -> None:
+        """Clean up every actual port family even after its device is removed."""
+        port = UnifiPortSensor(
+            cleanup_coordinator, description, "site1", "device1", port_idx=99
+        )
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            port.unique_id,
+            config_entry=mock_config_entry,
+            translation_key=port.translation_key,
+        )
+        cleanup_coordinator.data["devices"] = {}
+        await async_setup_entry(hass, mock_config_entry, MagicMock())
+        assert entity_registry.async_get(row.entity_id) is None
+
+    @pytest.mark.parametrize("devices", [None, []], ids=["null", "list"])
+    async def test_unknown_device_inventory_preserves_native_registry_rows(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        devices: Any,
+    ) -> None:
+        """Keep native rows when startup has no sites or usable device inventory."""
+        other = MockConfigEntry(
+            domain=DOMAIN,
+            entry_id="synthetic_foreign_cleanup_entry",
+            unique_id="console_b",
+            data={
+                CONF_CONSOLE_ID: "console_b",
+                CONF_API_KEY: "synthetic_foreign_credential",
+            },
+        )
+        other.add_to_hass(hass)
+        own_port = UnifiPortSensor(
+            cleanup_coordinator, PORT_SENSOR_TYPES[1], "site1", "device1", 99
+        )
+        cleanup_coordinator.data["devices"]["site1"]["foreign_device"] = {
+            **cleanup_coordinator.data["devices"]["site1"]["device1"],
+            "name": "Synthetic foreign switch",
+        }
+        foreign_port = UnifiPortSensor(
+            cleanup_coordinator, PORT_SENSOR_TYPES[1], "site1", "foreign_device", 99
+        )
+        rows = [
+            entity_registry.async_get_or_create(
+                "sensor",
+                DOMAIN,
+                own_port.unique_id,
+                config_entry=mock_config_entry,
+            ),
+            entity_registry.async_get_or_create(
+                "sensor",
+                DOMAIN,
+                "console_a_site1_site_total_clients",
+                config_entry=mock_config_entry,
+                translation_key="site_total_clients",
+            ),
+            entity_registry.async_get_or_create(
+                "sensor",
+                DOMAIN,
+                foreign_port.unique_id,
+                config_entry=other,
+                translation_key=foreign_port.translation_key,
+            ),
+        ]
+        rows = [
+            entity_registry.async_update_entity(
+                row.entity_id,
+                name=f"Custom retained sensor {index}",
+                disabled_by=RegistryEntryDisabler.USER,
+                hidden_by=RegistryEntryHider.USER,
+            )
+            for index, row in enumerate(rows)
+        ]
+        cleanup_coordinator.data["sites"] = {}
+        cleanup_coordinator.data["devices"] = devices
+        added: list[SensorEntity] = []
+        with patch.object(
+            entity_registry, "async_remove", wraps=entity_registry.async_remove
+        ) as remove:
+            await async_setup_entry(hass, mock_config_entry, added.extend)
+
+        assert not added
+        remove.assert_not_called()
+        cleanup_coordinator.async_add_listener.assert_called_once()
+        for row in rows:
+            assert entity_registry.async_get(row.entity_id) == row
+
+    @pytest.mark.parametrize(
+        ("translation_key", "device_present", "removed"),
+        [
+            (None, True, True),
+            ("", True, True),
+            (None, False, False),
+            ("incompatible_key", True, False),
+        ],
+    )
+    async def test_missing_port_metadata_requires_current_device_evidence(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        translation_key: str | None,
+        *,
+        device_present: bool,
+        removed: bool,
+    ) -> None:
+        """Retain ambiguous rows while cleaning known-device ports without metadata."""
+        port = UnifiPortSensor(
+            cleanup_coordinator, PORT_SENSOR_TYPES[1], "site1", "device1", 99
+        )
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            port.unique_id,
+            config_entry=mock_config_entry,
+            translation_key=translation_key,
+        )
+        if not device_present:
+            cleanup_coordinator.data["devices"] = {}
+        await async_setup_entry(hass, mock_config_entry, MagicMock())
+        assert (entity_registry.async_get(row.entity_id) is None) is removed
+
+    @pytest.mark.parametrize("ownership", ["foreign", "platform", "domain"])
+    async def test_port_cleanup_respects_registry_ownership(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        ownership: str,
+    ) -> None:
+        """Retain port-shaped rows owned by another entry, platform, or domain."""
+        other = MockConfigEntry(
+            domain=DOMAIN,
+            entry_id="synthetic_foreign_entry",
+            data={CONF_CONSOLE_ID: "foreign_console"},
+            unique_id="foreign_console",
+        )
+        other.add_to_hass(hass)
+        port = UnifiPortSensor(
+            cleanup_coordinator, PORT_SENSOR_TYPES[1], "site1", "device1", 99
+        )
+        row = entity_registry.async_get_or_create(
+            "binary_sensor" if ownership == "domain" else "sensor",
+            "other_platform" if ownership == "platform" else DOMAIN,
+            port.unique_id,
+            config_entry=other if ownership == "foreign" else mock_config_entry,
+            translation_key=port.translation_key,
+            disabled_by=RegistryEntryDisabler.USER,
+        )
+        await async_setup_entry(hass, mock_config_entry, MagicMock())
+        assert entity_registry.async_get(row.entity_id) == row
+
+    @pytest.mark.parametrize(
+        ("unique_id", "removed"),
+        [
+            ("device1_port_speed_-1", True),
+            ("device1_port_speed_0", True),
+            ("device1_port_speed_99", True),
+            ("device1_port_speed_099", False),
+            ("device1_port_speed_bad", False),
+            ("device1_port_speed_", False),
+            ("_port_speed_99", False),
+            ("device1_port_unknown_99", False),
+            ("device1_port_speed", False),
+        ],
+    )
+    async def test_port_cleanup_requires_constructor_identity_shape(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        unique_id: str,
+        *,
+        removed: bool,
+    ) -> None:
+        """Require a nonempty device, known key, and canonical integer port tail."""
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            unique_id,
+            config_entry=mock_config_entry,
+            translation_key="port_speed",
+        )
+        await async_setup_entry(hass, mock_config_entry, MagicMock())
+        assert (entity_registry.async_get(row.entity_id) is None) is removed
+
+    async def test_active_port_retains_native_registry_identity(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+    ) -> None:
+        """Keep an active port's native row and user metadata across discovery."""
+        cleanup_coordinator.data["devices"]["site1"]["device1"]["ports"] = [
+            {"idx": 1, "state": "UP"}
+        ]
+        port = UnifiPortSensor(
+            cleanup_coordinator, PORT_SENSOR_TYPES[1], "site1", "device1", 1
+        )
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            port.unique_id,
+            config_entry=mock_config_entry,
+            translation_key=port.translation_key,
+            disabled_by=RegistryEntryDisabler.USER,
+        )
+        row = entity_registry.async_update_entity(
+            row.entity_id, name="Custom active port"
+        )
+        added: list[SensorEntity] = []
+        await async_setup_entry(hass, mock_config_entry, added.extend)
+        assert row.unique_id in {entity.unique_id for entity in added}
+        assert entity_registry.async_get(row.entity_id) == row
+
+    @pytest.mark.parametrize(
+        "description", STORAGE_SENSOR_TYPES, ids=lambda description: description.key
+    )
+    async def test_storage_rows_with_port_text_survive_cleanup(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        description: UnifiStorageSensorEntityDescription,
+    ) -> None:
+        """Preserve native storage rows whose mount paths contain _port_."""
+        storage = UnifiStorageSensor(
+            cleanup_coordinator,
+            description,
+            "site1",
+            "device1",
+            mount_point="/mnt/usb_port_1",
+            mount_label="Synthetic USB storage",
+            volatile=False,
+        )
+        row = entity_registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            storage.unique_id,
+            config_entry=mock_config_entry,
+            translation_key=storage.translation_key,
+            disabled_by=RegistryEntryDisabler.USER,
+        )
+        await async_setup_entry(hass, mock_config_entry, MagicMock())
+        assert entity_registry.async_get(row.entity_id) == row

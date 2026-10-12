@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
     from homeassistant.helpers.typing import StateType
 
 from homeassistant.components.sensor import (
@@ -29,6 +31,7 @@ from .coordinators.voucher_state import (
     voucher_site_ids,
 )
 from .entity import build_site_device_info
+from .helpers import async_migrate_site_entity
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -167,12 +170,14 @@ class UnifiVoucherSensor(CoordinatorEntity[UnifiFacadeCoordinator], SensorEntity
         coordinator: UnifiFacadeCoordinator,
         description: UnifiVoucherSensorEntityDescription,
         site_id: str,
+        *,
+        unique_id: str,
     ) -> None:
         """Initialize the voucher sensor."""
         super().__init__(coordinator)
         self.entity_description = description
         self._site_id = site_id
-        self._attr_unique_id = f"{site_id}_{description.key}"
+        self._attr_unique_id = unique_id
         self._attr_device_info = DeviceInfo(
             **build_site_device_info(coordinator.data, site_id)  # type: ignore[typeddict-item]
         )
@@ -201,6 +206,10 @@ class UnifiVoucherSensor(CoordinatorEntity[UnifiFacadeCoordinator], SensorEntity
 def discover_voucher_sensors(
     coordinator: UnifiFacadeCoordinator,
     known_sensor_keys: set[tuple[str, ...]],
+    *,
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    namespace: str | None,
 ) -> list[SensorEntity]:
     """Discover and instantiate voucher sensors for each configured site."""
     entities: list[SensorEntity] = []
@@ -209,7 +218,14 @@ def discover_voucher_sensors(
             key = (site_id, description.key)
             if key in known_sensor_keys:
                 continue
-            entity = UnifiVoucherSensor(coordinator, description, site_id)
+            unique_id = async_migrate_site_entity(
+                hass, entry, "sensor", namespace, site_id, description.key
+            )
+            if unique_id is None:
+                continue
+            entity = UnifiVoucherSensor(
+                coordinator, description, site_id, unique_id=unique_id
+            )
             known_sensor_keys.add(key)
             entities.append(entity)
     return entities

@@ -12,6 +12,7 @@ Verifies:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,8 +26,10 @@ from custom_components.unifi_insights import (
     _first_site_id,
     _is_console_device,
     async_migrate_entry,
+    async_setup_entry,
 )
 from custom_components.unifi_insights.api import UniFiResponseError
+from custom_components.unifi_insights.config_flow import UnifiInsightsConfigFlow
 from custom_components.unifi_insights.const import (
     CONF_CLIENT_CONTROL,
     CONF_CONNECTION_TYPE,
@@ -39,6 +42,10 @@ from custom_components.unifi_insights.const import (
     CONNECTION_TYPE_REMOTE,
     DOMAIN,
 )
+from custom_components.unifi_insights.coordinators.protect import (
+    UnifiProtectCoordinator,
+)
+from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -1019,18 +1026,16 @@ async def test_flow_stops_scanning_once_the_console_is_found(
     assert net_client.devices.get_all.await_count == 1
 
 
-async def test_flow_and_setup_agree_on_a_default_first_site(
+async def test_no_mac_flow_uses_host_when_default_site_comes_first(
     hass: HomeAssistant,
 ) -> None:
-    """Both paths skip the "default" site id and pick the same next one.
+    """Keep console identity independent of default and non-default site IDs.
 
-    ``Site.id`` is synthesized from ``internalReference``, so a controller can
-    genuinely report "default" first. The flow used to fall back to the host
-    here while ``_first_site_id`` skipped ahead to the next site, which is the
-    disagreement this shares a rule to prevent.
+    The site-order utility still returns the first non-default site, while
+    the configuration flow uses the actual host when no console MAC is found.
     """
     # No stored identity: a stored one would rightly take precedence over a
-    # freshly derived site id, which would hide what the flow derived.
+    # freshly derived host, which would hide what the flow derived.
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id=None,
@@ -1043,7 +1048,7 @@ async def test_flow_and_setup_agree_on_a_default_first_site(
     )
     entry.add_to_hass(hass)
 
-    # No console among the devices, so identity falls back to a site id.
+    # No console among the devices, so identity falls back to the actual host.
     net_cm, _ = _make_mock_client(
         sites=[
             MagicMock(id="default", name="Default"),
@@ -1079,9 +1084,8 @@ async def test_flow_and_setup_agree_on_a_default_first_site(
         )
         await hass.async_block_till_done()
 
-    # The flow picked the first non-default site, not the host...
-    assert entry.data[CONF_CONSOLE_ID] == "site-b"
-    # ...which is exactly what setup derives from the same site order.
+    assert entry.data[CONF_CONSOLE_ID] == "https://192.168.1.1"
+    # Inventory ordering remains available without establishing identity.
     coordinator = MagicMock()
     coordinator.data = {"sites": {"default": {}, "site-b": {}}}
     assert _first_site_id(coordinator) == "site-b"
@@ -1141,7 +1145,7 @@ class TestConsoleDeviceDetection:
 async def test_migration_version_guard_and_unique_id_collision(
     hass: HomeAssistant,
 ) -> None:
-    """Migration aborts on higher major version and avoids duplicate unique_id collision."""
+    """Abort newer-schema migration and avoid duplicate unique_id collisions."""
     # Higher major version returns False
     entry_future = MockConfigEntry(
         domain=DOMAIN,
@@ -1182,9 +1186,7 @@ async def test_async_setup_entry_discovers_console_identity_from_nvr(
     hass: HomeAssistant,
     enable_custom_integrations,
 ) -> None:
-    """async_setup_entry updates local entry with console MAC, name and title from NVR."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
+    """Update the local entry with the NVR's console MAC, name, and title."""
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -1262,9 +1264,7 @@ async def test_async_setup_entry_discovers_console_identity_from_device_gateway(
     hass: HomeAssistant,
     enable_custom_integrations,
 ) -> None:
-    """async_setup_entry updates local entry with console MAC and name from Gateway device."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
+    """Update the local entry with the gateway's console MAC and name."""
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -1334,19 +1334,14 @@ async def test_console_identity_extra_coverage_branches(
     hass: HomeAssistant,
     enable_custom_integrations,
 ) -> None:
-    """Cover edge cases in _first_site_id, device parsing, setup fallbacks and protect coordinator."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
-    from custom_components.unifi_insights.coordinators.protect import (
-        UnifiProtectCoordinator,
-    )
+    """Cover site lookup, device parsing, setup fallback, and Protect edge cases."""
 
     # 1. _first_site_id when sites is not a dict
     coord = MagicMock()
     coord.data = {"sites": "not_a_dict"}
     assert _first_site_id(coord) is None
 
-    # 2. Local setup fallback to site_id and host, plus non-dict site devices handling
+    # 2. Local setup uses the host, with non-dict site devices handled defensively.
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="UniFi Insights (Local)",
@@ -1414,8 +1409,8 @@ async def test_console_identity_extra_coverage_branches(
         entry.mock_state(hass, config_entries.ConfigEntryState.LOADED)
         res = await async_setup_entry(hass, entry)
         assert res is True
-        assert entry.data.get(CONF_CONSOLE_ID) == "my_custom_site"
-        assert entry.unique_id == "my_custom_site"
+        assert entry.data.get(CONF_CONSOLE_ID) == "192.168.1.100"
+        assert entry.unique_id == "192.168.1.100"
         await hass.config_entries.async_unload(entry.entry_id)
 
     # 3. Protect coordinator methods when client is None or timers already stopped
@@ -1433,10 +1428,8 @@ async def test_console_identity_extra_coverage_branches(
 async def test_config_flow_local_probe_protect_nvr_and_reconfigure_mismatch(
     hass: HomeAssistant,
 ) -> None:
-    """Test local config flow extracts NVR info and remote reconfigure aborts on console mismatch."""
+    """Test NVR discovery and reject reconfiguration to a different console."""
     # 1. Local flow with Protect probe returning NVR
-    from custom_components.unifi_insights.api import UniFiResponseError
-
     net_cm, net_client = _make_mock_client()
     net_client.sites.get_all = AsyncMock(
         side_effect=UniFiResponseError("Not Found", status_code=404)
@@ -1537,10 +1530,6 @@ async def test_console_identity_final_branch_coverage(
     hass: HomeAssistant,
 ) -> None:
     """Cover remaining edge cases in config flow and protect coordinator."""
-    from custom_components.unifi_insights.coordinators.protect import (
-        UnifiProtectCoordinator,
-    )
-
     # 1. Protect coordinator _start_sensor_reconcile_timer when timer already active
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
@@ -1551,7 +1540,7 @@ async def test_console_identity_final_branch_coverage(
     p_coord._start_sensor_reconcile_timer()
     assert p_coord._unsub_sensor_reconcile is not None
 
-    # 2. Local flow probe network fallback to custom site id and site name
+    # 2. Local flow retains the site name but uses the host as its fallback ID.
     net_cm, _ = _make_mock_client(
         sites=[MagicMock(id="custom_site_beta", name="Beta Site")],
         devices=[],
@@ -1580,11 +1569,9 @@ async def test_console_identity_final_branch_coverage(
             },
         )
         assert result["type"] == FlowResultType.CREATE_ENTRY
-        assert result["result"].unique_id == "custom_site_beta"
+        assert result["result"].unique_id == "https://192.168.1.15"
 
     # 3. Local flow probe protect NVR inspect exception handling
-    from custom_components.unifi_insights.api import UniFiResponseError
-
     net_cm_err, net_client_err = _make_mock_client()
     net_client_err.sites.get_all = AsyncMock(
         side_effect=UniFiResponseError("Not Found", status_code=404)
@@ -1692,9 +1679,6 @@ async def test_async_setup_entry_handles_malformed_coordinator_data(
     a non-empty ``nvrs`` dict whose first value isn't itself a dict, and a
     ``devices`` value that isn't a dict at all.
     """
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
-
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="UniFi Insights (Local)",
@@ -1759,9 +1743,9 @@ async def test_async_setup_entry_handles_malformed_coordinator_data(
         res = await async_setup_entry(hass, entry)
         assert res is True
         # Neither the NVR nor the device payload yielded a usable mac, so
-        # identity falls back to the config coordinator's site id.
-        assert entry.data.get(CONF_CONSOLE_ID) == "site_xyz"
-        assert entry.unique_id == "site_xyz"
+        # identity falls back to the explicit console host.
+        assert entry.data.get(CONF_CONSOLE_ID) == "192.168.1.50"
+        assert entry.unique_id == "192.168.1.50"
         await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -1770,9 +1754,6 @@ async def test_async_setup_entry_keeps_preset_console_name_from_nvr(
     enable_custom_integrations,
 ) -> None:
     """An already-known console name is not clobbered by the NVR's name."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
-
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="UniFi - Preset Name",
@@ -1848,9 +1829,6 @@ async def test_async_setup_entry_keeps_preset_console_name_from_device(
     enable_custom_integrations,
 ) -> None:
     """An already-known console name is not clobbered by a discovered gateway's name."""
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
-
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="UniFi - Preset Device Name",
@@ -1914,26 +1892,17 @@ async def test_async_setup_entry_keeps_preset_console_name_from_device(
         await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_async_setup_entry_leaves_unstable_console_id_when_no_mac_found(
+async def test_async_setup_entry_backfills_credential_identity_when_no_mac_found(
     hass: HomeAssistant,
     enable_custom_integrations,
 ) -> None:
-    """A console_id that is still the API key is left untouched if no mac is found.
-
-    The fallback to site id/host only fires when console_id was completely
-    unset - an api-key-shaped console_id from an old schema is left as-is
-    rather than being silently replaced, since it is still a better-than-
-    nothing identity that a future refresh may yet resolve to a real mac.
-    """
-    from custom_components.unifi_insights import async_setup_entry
-    from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
-
+    """Backfill a legacy credential identity with the host when no MAC is found."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id="local_api_key_unstable",
         data={
             CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
-            CONF_HOST: "192.168.1.53",
+            CONF_HOST: "https://Console.Example.Invalid",
             CONF_API_KEY: "local_api_key_unstable",
             CONF_VERIFY_SSL: False,
             CONF_CONSOLE_ID: "local_api_key_unstable",
@@ -1942,6 +1911,7 @@ async def test_async_setup_entry_leaves_unstable_console_id_when_no_mac_found(
     entry.add_to_hass(hass)
 
     async def fake_device_refresh(coord_self):
+        """Refresh a console without discovered devices or a usable MAC."""
         coord_self.data = {"devices": {}}
 
     with (
@@ -1975,15 +1945,85 @@ async def test_async_setup_entry_leaves_unstable_console_id_when_no_mac_found(
         entry.mock_state(hass, config_entries.ConfigEntryState.LOADED)
         res = await async_setup_entry(hass, entry)
         assert res is True
-        assert entry.data.get(CONF_CONSOLE_ID) == "local_api_key_unstable"
-        assert entry.unique_id == "local_api_key_unstable"
+        assert entry.data.get(CONF_CONSOLE_ID) == "https://console.example.invalid"
+        assert entry.unique_id == "https://console.example.invalid"
         await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize("source", ["user", "reconfigure"])
+async def test_local_no_mac_flow_keeps_shared_site_consoles_distinct(
+    hass: HomeAssistant, source: str
+) -> None:
+    """Use distinct actual hosts for initial and legacy reconfiguration flows."""
+    identities = []
+    for index in ("a", "b"):
+        host = f"https://Console{index.upper()}.Example.Invalid"
+        context = {"source": source}
+        if source == "reconfigure":
+            stored_key = f"synthetic_old_key_{index}"
+            entry = MockConfigEntry(
+                domain=DOMAIN,
+                data={
+                    CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+                    CONF_CONSOLE_ID: stored_key,
+                    CONF_API_KEY: stored_key,
+                    CONF_HOST: host,
+                },
+                unique_id=stored_key,
+            )
+            entry.add_to_hass(hass)
+            context["entry_id"] = entry.entry_id
+        network, _ = _make_mock_client(
+            sites=[MagicMock(id="site_shared", name="Synthetic site")],
+            devices=[],
+        )
+        with (
+            patch(
+                "custom_components.unifi_insights.config_flow.UniFiNetworkClient",
+                return_value=network,
+            ),
+            patch("custom_components.unifi_insights.config_flow.LocalAuth"),
+            patch(
+                "custom_components.unifi_insights.async_setup_entry", return_value=True
+            ),
+            patch(
+                "custom_components.unifi_insights.async_migrate_entry",
+                return_value=True,
+            ),
+        ):
+            result = await hass.config_entries.flow.async_init(DOMAIN, context=context)
+            if source == "user":
+                result = await hass.config_entries.flow.async_configure(
+                    result["flow_id"],
+                    user_input={CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL},
+                )
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"],
+                user_input={
+                    CONF_HOST: host,
+                    CONF_API_KEY: f"synthetic_new_key_{index}",
+                    CONF_VERIFY_SSL: False,
+                },
+            )
+            await hass.async_block_till_done()
+        if source == "user":
+            assert result["type"] == FlowResultType.CREATE_ENTRY
+            identities.append(result["result"].unique_id)
+        else:
+            assert result["type"] == FlowResultType.ABORT
+            assert result["reason"] == "reconfigure_successful"
+            assert entry.data[CONF_CONSOLE_ID] == entry.unique_id
+            identities.append(entry.unique_id)
+    assert identities == [
+        "https://consolea.example.invalid",
+        "https://consoleb.example.invalid",
+    ]
 
 
 async def test_migration_skips_v1_block_below_version_one(
     hass: HomeAssistant,
 ) -> None:
-    """A config entry below version 1 (defensive) is left untouched but still succeeds."""
+    """Leave a config entry below version 1 untouched and report success."""
     entry_v0 = MockConfigEntry(
         domain=DOMAIN,
         version=0,
@@ -2008,8 +2048,8 @@ async def test_local_flow_device_scan_skips_non_console_and_captures_name(
 
     Exercises the loop-continue branch when a device's type/model doesn't
     match any console token, and the case where a matched console exposes
-    a name but no usable mac - identity then falls back to the site id,
-    matching the device-scan-then-site-id fallback order.
+    a name but no usable MAC - identity then falls back to the normalized
+    configured host, keeping consoles sharing a site ID separate.
     """
     dev_switch = MagicMock()
     dev_switch.type = None
@@ -2058,8 +2098,8 @@ async def test_local_flow_device_scan_skips_non_console_and_captures_name(
         )
         assert result["type"] == FlowResultType.CREATE_ENTRY
         # The switch was skipped; the Dream Machine matched by model but
-        # exposed no mac, so identity falls back to the site id.
-        assert result["result"].unique_id == "site_gamma"
+        # exposed no mac, so identity falls back to the explicit console host.
+        assert result["result"].unique_id == "https://192.168.1.60"
         assert result["data"].get(CONF_CONSOLE_ID) is None
 
 
@@ -2067,8 +2107,6 @@ async def test_local_flow_protect_probe_without_nvr_attribute(
     hass: HomeAssistant,
 ) -> None:
     """Protect clients that expose no nvr sub-client skip NVR inspection cleanly."""
-    from custom_components.unifi_insights.api import UniFiResponseError
-
     net_cm_err, net_client_err = _make_mock_client()
     net_client_err.sites.get_all = AsyncMock(
         side_effect=UniFiResponseError("Not Found", status_code=404)
@@ -2127,8 +2165,7 @@ async def test_local_flow_protect_probe_without_nvr_attribute(
 async def test_local_flow_protect_probe_nvr_returns_none(
     hass: HomeAssistant,
 ) -> None:
-    """An available Protect API with cameras but no NVR record keeps the host-based id."""
-    from custom_components.unifi_insights.api import UniFiResponseError
+    """Keep the host-based id when an available Protect API has no NVR record."""
 
     net_cm_err, net_client_err = _make_mock_client()
     net_client_err.sites.get_all = AsyncMock(
@@ -2177,6 +2214,53 @@ async def test_local_flow_protect_probe_nvr_returns_none(
         assert result["data"].get(CONF_CONSOLE_ID) is None
 
 
+@pytest.mark.parametrize(
+    "host",
+    ["", " \t ", "bad host", "synthetic-probe-key", "SYNTHETIC:PROBE:KEY"],
+    ids=["empty", "whitespace", "malformed", "credential", "normalized_credential"],
+)
+async def test_available_network_probe_rejects_unsafe_host_identity(
+    hass: HomeAssistant, host: str
+) -> None:
+    """Keep connectivity usable without adopting a malformed or credential host."""
+    network_context, network_client = _make_mock_client(
+        sites=[SimpleNamespace(id="site_shared", name="Synthetic site")],
+        devices=[
+            SimpleNamespace(
+                model="UDM-Pro",
+                name="Synthetic gateway without a MAC",
+                is_gateway=True,
+                mac=None,
+            )
+        ],
+    )
+    flow = UnifiInsightsConfigFlow()
+    flow.hass = hass
+    entries_before = hass.config_entries.async_entries(DOMAIN)
+    with (
+        patch(
+            "custom_components.unifi_insights.config_flow.UniFiNetworkClient",
+            return_value=network_context,
+        ),
+        patch(
+            "custom_components.unifi_insights.config_flow.UniFiProtectClient"
+        ) as protect_client,
+        patch("custom_components.unifi_insights.config_flow.LocalAuth"),
+    ):
+        available, error, console_info = await flow._async_validate_local_connection(
+            host, "synthetic-probe-key"
+        )
+
+    assert available
+    assert error is None
+    assert console_info == {"name": "Synthetic site"}
+    assert hass.config_entries.async_entries(DOMAIN) == entries_before
+    network_client.sites.get_all.assert_awaited_once_with(expected_unsupported=True)
+    network_client.devices.get_all.assert_awaited_once_with(site_id="site_shared")
+    network_context.__aexit__.assert_awaited_once()
+    protect_client.assert_not_called()
+
+
 async def test_local_reconfigure_with_blank_host_preserves_console_id(
     hass: HomeAssistant,
 ) -> None:
@@ -2186,8 +2270,6 @@ async def test_local_reconfigure_with_blank_host_preserves_console_id(
     never populated `console_info["id"]` with anything usable, so there is
     nothing better to store than what the entry already had.
     """
-    from custom_components.unifi_insights.api import UniFiResponseError
-
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id="existing_console_id_777",

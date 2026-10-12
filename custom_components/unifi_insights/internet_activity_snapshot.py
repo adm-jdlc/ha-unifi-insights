@@ -6,7 +6,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from .console_identity import build_legacy_site_unique_id, build_site_unique_id
+from .const import DOMAIN
 from .dashboard_contract_utils import as_dict, content_revision, enum_str
+from .helpers import owned_site_entity_unique_id
 from .performance import bytes_per_second_to_bits_per_second
 from .topology_contract import device_kind, first_present, site_display_name
 
@@ -17,13 +20,25 @@ def _resolve_entity_ids(
     registry: Any,
     *,
     site_id: str,
+    entry_id: str,
+    namespace: str | None,
 ) -> dict[str, str]:
+    """Resolve activity references using the shared ownership and legacy policy."""
     ids: dict[str, str] = {}
     # Sensor keys implemented by site_internet_activity_sensor.py
     for direction in ("download", "upload"):
         for window in WINDOWS:
-            uid = f"{site_id}_internet_{direction}_{window}"
-            entity_id = registry.async_get_entity_id("sensor", "unifi_insights", uid)
+            key = f"internet_{direction}_{window}"
+            legacy = build_legacy_site_unique_id(site_id, key)
+            target = (
+                build_site_unique_id(namespace, site_id, key) if namespace else None
+            )
+            uid = owned_site_entity_unique_id(
+                registry, entry_id, "sensor", legacy, target, key
+            )
+            entity_id = (
+                registry.async_get_entity_id("sensor", DOMAIN, uid) if uid else None
+            )
             if entity_id:
                 ids[f"{direction}_{window}"] = entity_id
     return ids
@@ -35,6 +50,7 @@ def build_internet_activity_snapshot(
     entry_id: str,
     site_id: str,
     entity_registry: Any,
+    namespace: str | None = None,
 ) -> dict[str, Any]:
     """Build one site's internet-activity snapshot."""
     activity_by_site = as_dict(data.get("internet_activity"))
@@ -130,6 +146,8 @@ def build_internet_activity_snapshot(
         "entity_ids": _resolve_entity_ids(
             entity_registry,
             site_id=site_id,
+            entry_id=entry_id,
+            namespace=namespace,
         ),
         "throughput": throughput,
         "wan_health": {

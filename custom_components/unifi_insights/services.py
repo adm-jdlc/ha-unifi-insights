@@ -221,7 +221,10 @@ def _raise_for_mobility_target(
     if ent_entry is not None and ent_entry.unique_id:
         identifiers.append(ent_entry.unique_id)
     if any(identifier.startswith(MOBILITY_DEVICE_PREFIX) for identifier in identifiers):
-        msg = f"Target '{target}' is a UniFi Mobility router, which this action does not support"
+        msg = (
+            f"Target '{target}' is a UniFi Mobility router, "
+            "which this action does not support"
+        )
         raise ServiceValidationError(msg)
 
 

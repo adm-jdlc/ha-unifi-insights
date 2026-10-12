@@ -42,7 +42,7 @@ from .api.protect import UniFiProtectClient
 from .console_identity import (
     DEFAULT_SITE_ID,
     device_fields,
-    first_non_default_site_id,
+    normalize_console_namespace,
     normalize_mac,
     resolve_console_identity,
 )
@@ -69,6 +69,11 @@ from .const import (
     DEFAULT_TRACK_SUBSCRIBERS,
     DOMAIN,
 )
+from .helpers import (
+    SiteEntityIdentityError,
+    async_rekey_site_entities,
+    async_restore_site_entity_identities,
+)
 from .probe import (
     ProbeResult,
     ProbeStatus,
@@ -78,6 +83,7 @@ from .probe import (
     async_probe_with_client,
     is_transient_error,
 )
+from .topology_contract import normalize_mac as normalize_hardware_mac
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -258,11 +264,11 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                         break
 
                 if "id" not in console_info:
-                    # Same ordering rule setup applies, so both derive the
-                    # same identity instead of drifting apart.
-                    console_info["id"] = (
-                        first_non_default_site_id(site_ids) or host.lower()
-                    )
+                    # A shared site cannot identify a console. Match setup's
+                    # explicit local-endpoint fallback when no MAC is available.
+                    host_id = normalize_console_namespace(host, credentials=(api_key,))
+                    if host_id:
+                        console_info["id"] = host_id
                     site_name = getattr(res.sites[0], "name", None)
                     if type(site_name) is str:
                         console_info["name"] = site_name
@@ -727,6 +733,60 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    def _async_update_site_entry_and_abort(
+        self,
+        entry: ConfigEntry,
+        data: dict[str, Any],
+        console_id: Any,
+        *,
+        unique_id: str | None = None,
+        reason: str | None = None,
+    ) -> ConfigFlowResult:
+        """
+        Compensate synchronous failures across registry and entry updates.
+
+        Home Assistant schedules persistence and reloads after in-memory mutation.
+        This protects the synchronous transition, not delayed disk failures or
+        process crashes; both stores remain managed by native Home Assistant APIs.
+        """
+        previous_data = entry.data
+        previous_unique_id = entry.unique_id
+        updates = async_rekey_site_entities(
+            self.hass, entry, console_id, pending_api_key=data.get(CONF_API_KEY)
+        )
+        kwargs: dict[str, Any] = {"data": data}
+        if unique_id is not None:
+            kwargs["unique_id"] = unique_id
+        if reason is not None:
+            kwargs["reason"] = reason
+        try:
+            return self.async_update_reload_and_abort(entry, **kwargs)
+        except Exception:
+            try:
+                if entry.data != previous_data or entry.unique_id != previous_unique_id:
+                    owner = (
+                        self.hass.config_entries.async_entry_for_domain_unique_id(
+                            DOMAIN, previous_unique_id
+                        )
+                        if previous_unique_id is not None
+                        else None
+                    )
+                    if self.hass.config_entries.async_get_entry(
+                        entry.entry_id
+                    ) is not entry or (owner is not None and owner is not entry):
+                        _LOGGER.warning(
+                            "Cannot safely restore the saved connection identity"
+                        )
+                    else:
+                        self.hass.config_entries.async_update_entry(
+                            entry, data=previous_data, unique_id=previous_unique_id
+                        )
+            except Exception:
+                _LOGGER.warning("Unable to fully restore saved connection settings")
+            finally:
+                async_restore_site_entity_identities(self.hass, entry, updates)
+            raise
+
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -750,12 +810,22 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                         verify_ssl=reauth_entry.data.get(CONF_VERIFY_SSL, False),
                     )
                     if is_valid:
-                        return self.async_update_reload_and_abort(
+                        console_id = normalize_console_namespace(
+                            reauth_entry.data.get(CONF_CONSOLE_ID),
+                            credentials=(reauth_entry.data.get(CONF_API_KEY),),
+                        )
+                        new_data = {
+                            **reauth_entry.data,
+                            CONF_API_KEY: user_input[CONF_API_KEY],
+                        }
+                        if console_id is None:
+                            # Do not promote the old credential to a namespace
+                            # after rotation. Setup will discover a safe ID.
+                            new_data.pop(CONF_CONSOLE_ID, None)
+                        return self._async_update_site_entry_and_abort(
                             reauth_entry,
-                            data={
-                                **reauth_entry.data,
-                                CONF_API_KEY: user_input[CONF_API_KEY],
-                            },
+                            new_data,
+                            console_id,
                         )
                     if error_code == "invalid_auth":
                         errors[CONF_API_KEY] = "invalid_auth"
@@ -782,18 +852,22 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                                     console_id,
                                 )
                                 if sites_found:
-                                    return self.async_update_reload_and_abort(
+                                    return self._async_update_site_entry_and_abort(
                                         reauth_entry,
-                                        data={
+                                        {
                                             **reauth_entry.data,
                                             CONF_API_KEY: api_key,
                                             CONF_CONSOLE_ID: console_id,
                                         },
+                                        console_id,
                                     )
                                 errors["base"] = "invalid_console_id"
                             except UniFiAuthenticationError:
                                 errors["base"] = "invalid_console_id"
 
+            except SiteEntityIdentityError as err:
+                _LOGGER.warning("Cannot change console identity safely: %s", err)
+                errors["base"] = "site_entity_identity_conflict"
             except UniFiAuthenticationError:
                 errors[CONF_API_KEY] = "invalid_auth"
             except UniFiConnectionError:
@@ -875,34 +949,34 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                     if is_valid:
                         current_id = entry.data.get(CONF_CONSOLE_ID) or entry.unique_id
-                        # Only a discovered hardware MAC may replace the stored
-                        # identity. Device inspection swallows transient errors
-                        # and then falls back to a site id or the host, and
-                        # that fallback would otherwise overwrite a real MAC
-                        # permanently: setup only backfills when console_id is
-                        # falsy, and the ":"-based mismatch guard below can
-                        # never fire again once the id stops looking like a MAC.
+                        if (
+                            normalize_console_namespace(
+                                current_id,
+                                credentials=(
+                                    entry.data.get(CONF_API_KEY),
+                                    user_input[CONF_API_KEY],
+                                ),
+                            )
+                            is None
+                        ):
+                            current_id = None
+                        # Keep the stored identity when device inspection cannot
+                        # discover hardware. A host fallback may be promoted
+                        # once the console reports a MAC, but two real hardware
+                        # addresses must still identify the same console.
                         new_id = (
                             console_info.get("mac")
                             or current_id
                             or console_info.get("id")
                         )
-                        if (
-                            new_id
-                            and current_id
-                            and ":" in new_id
-                            and ":" in current_id
-                            and new_id != current_id
-                        ):
+                        current_mac = normalize_hardware_mac(current_id)
+                        new_mac = normalize_hardware_mac(new_id)
+                        if current_mac and new_mac and new_mac != current_mac:
                             return self.async_abort(reason="account_mismatch")
 
-                        # The guard above only fires when both ids look like
-                        # MACs, so a legacy entry still keyed on a site id or
-                        # host slips past it. Setup and the migration both
-                        # check for an existing owner before claiming a
-                        # unique_id; async_update_reload_and_abort does not,
-                        # and Home Assistant will happily let two entries
-                        # share one.
+                        # A legacy host or site identity can adopt a MAC only
+                        # when another entry does not already own it. The native
+                        # update/reload helper does not enforce that ownership.
                         if new_id and new_id != entry.unique_id:
                             entries = self.hass.config_entries
                             owner = entries.async_entry_for_domain_unique_id(
@@ -920,9 +994,10 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                         if new_id:
                             new_data[CONF_CONSOLE_ID] = new_id
 
-                        return self.async_update_reload_and_abort(
+                        return self._async_update_site_entry_and_abort(
                             entry,
-                            data=new_data,
+                            new_data,
+                            new_id,
                             unique_id=new_id or entry.unique_id,
                             reason="reconfigure_successful",
                         )
@@ -966,9 +1041,10 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                                         CONF_CONSOLE_ID: console_id,
                                         CONF_API_KEY: api_key,
                                     }
-                                    return self.async_update_reload_and_abort(
+                                    return self._async_update_site_entry_and_abort(
                                         entry,
-                                        data=new_data,
+                                        new_data,
+                                        console_id,
                                         unique_id=console_id,
                                         reason="reconfigure_successful",
                                     )
@@ -976,6 +1052,9 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                             except UniFiAuthenticationError:
                                 errors[CONF_CONSOLE_ID] = "invalid_console_id"
 
+            except SiteEntityIdentityError as err:
+                _LOGGER.warning("Cannot change console identity safely: %s", err)
+                errors["base"] = "site_entity_identity_conflict"
             except UniFiAuthenticationError:
                 errors[CONF_API_KEY] = "invalid_auth"
             except UniFiConnectionError:

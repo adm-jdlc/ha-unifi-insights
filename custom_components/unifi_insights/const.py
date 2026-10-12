@@ -5,6 +5,40 @@ from typing import Final
 
 DOMAIN = "unifi_insights"
 
+# Exact logical-site families. Registry translation keys must also match these
+# keys before a console identity change can re-key an existing entity.
+SITE_ENTITY_SUFFIXES: dict[str, frozenset[str]] = {
+    "sensor": frozenset(
+        {
+            "site_total_clients",
+            "site_wired_clients",
+            "site_wireless_clients",
+            "internet_download_1h",
+            "internet_upload_1h",
+            "internet_download_1d",
+            "internet_upload_1d",
+            "internet_download_1w",
+            "internet_upload_1w",
+            "internet_download_1m",
+            "internet_upload_1m",
+            "latest_voucher_code",
+            "latest_voucher_expiration",
+            "active_vouchers",
+        }
+    ),
+    "number": frozenset(
+        {
+            "voucher_duration",
+            "voucher_guest_limit",
+            "voucher_download_limit",
+            "voucher_upload_limit",
+            "voucher_data_limit",
+        }
+    ),
+    "button": frozenset({"generate_voucher"}),
+    "image": frozenset({"voucher_qr_code"}),
+}
+
 MANUFACTURER: Final = "Ubiquiti Inc."
 
 # Connection types
