@@ -12,6 +12,7 @@ Verifies:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,6 +29,7 @@ from custom_components.unifi_insights import (
     async_setup_entry,
 )
 from custom_components.unifi_insights.api import UniFiResponseError
+from custom_components.unifi_insights.config_flow import UnifiInsightsConfigFlow
 from custom_components.unifi_insights.const import (
     CONF_CLIENT_CONTROL,
     CONF_CONNECTION_TYPE,
@@ -2210,6 +2212,53 @@ async def test_local_flow_protect_probe_nvr_returns_none(
         assert result["type"] == FlowResultType.CREATE_ENTRY
         assert result["result"].unique_id == "https://192.168.1.62"
         assert result["data"].get(CONF_CONSOLE_ID) is None
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["", " \t ", "bad host", "synthetic-probe-key", "SYNTHETIC:PROBE:KEY"],
+    ids=["empty", "whitespace", "malformed", "credential", "normalized_credential"],
+)
+async def test_available_network_probe_rejects_unsafe_host_identity(
+    hass: HomeAssistant, host: str
+) -> None:
+    """Keep connectivity usable without adopting a malformed or credential host."""
+    network_context, network_client = _make_mock_client(
+        sites=[SimpleNamespace(id="site_shared", name="Synthetic site")],
+        devices=[
+            SimpleNamespace(
+                model="UDM-Pro",
+                name="Synthetic gateway without a MAC",
+                is_gateway=True,
+                mac=None,
+            )
+        ],
+    )
+    flow = UnifiInsightsConfigFlow()
+    flow.hass = hass
+    entries_before = hass.config_entries.async_entries(DOMAIN)
+    with (
+        patch(
+            "custom_components.unifi_insights.config_flow.UniFiNetworkClient",
+            return_value=network_context,
+        ),
+        patch(
+            "custom_components.unifi_insights.config_flow.UniFiProtectClient"
+        ) as protect_client,
+        patch("custom_components.unifi_insights.config_flow.LocalAuth"),
+    ):
+        available, error, console_info = await flow._async_validate_local_connection(
+            host, "synthetic-probe-key"
+        )
+
+    assert available
+    assert error is None
+    assert console_info == {"name": "Synthetic site"}
+    assert hass.config_entries.async_entries(DOMAIN) == entries_before
+    network_client.sites.get_all.assert_awaited_once_with(expected_unsupported=True)
+    network_client.devices.get_all.assert_awaited_once_with(site_id="site_shared")
+    network_context.__aexit__.assert_awaited_once()
+    protect_client.assert_not_called()
 
 
 async def test_local_reconfigure_with_blank_host_preserves_console_id(

@@ -4539,6 +4539,81 @@ class TestStalePortCleanupNativeRegistry:
         await async_setup_entry(hass, mock_config_entry, MagicMock())
         assert entity_registry.async_get(row.entity_id) is None
 
+    @pytest.mark.parametrize("devices", [None, []], ids=["null", "list"])
+    async def test_unknown_device_inventory_preserves_native_registry_rows(
+        self,
+        hass: HomeAssistant,
+        entity_registry: er.EntityRegistry,
+        mock_config_entry: MockConfigEntry,
+        cleanup_coordinator: MagicMock,
+        devices: Any,
+    ) -> None:
+        """Keep native rows when startup has no sites or usable device inventory."""
+        other = MockConfigEntry(
+            domain=DOMAIN,
+            entry_id="synthetic_foreign_cleanup_entry",
+            unique_id="console_b",
+            data={
+                CONF_CONSOLE_ID: "console_b",
+                CONF_API_KEY: "synthetic_foreign_credential",
+            },
+        )
+        other.add_to_hass(hass)
+        own_port = UnifiPortSensor(
+            cleanup_coordinator, PORT_SENSOR_TYPES[1], "site1", "device1", 99
+        )
+        cleanup_coordinator.data["devices"]["site1"]["foreign_device"] = {
+            **cleanup_coordinator.data["devices"]["site1"]["device1"],
+            "name": "Synthetic foreign switch",
+        }
+        foreign_port = UnifiPortSensor(
+            cleanup_coordinator, PORT_SENSOR_TYPES[1], "site1", "foreign_device", 99
+        )
+        rows = [
+            entity_registry.async_get_or_create(
+                "sensor",
+                DOMAIN,
+                own_port.unique_id,
+                config_entry=mock_config_entry,
+            ),
+            entity_registry.async_get_or_create(
+                "sensor",
+                DOMAIN,
+                "console_a_site1_site_total_clients",
+                config_entry=mock_config_entry,
+                translation_key="site_total_clients",
+            ),
+            entity_registry.async_get_or_create(
+                "sensor",
+                DOMAIN,
+                foreign_port.unique_id,
+                config_entry=other,
+                translation_key=foreign_port.translation_key,
+            ),
+        ]
+        rows = [
+            entity_registry.async_update_entity(
+                row.entity_id,
+                name=f"Custom retained sensor {index}",
+                disabled_by=RegistryEntryDisabler.USER,
+                hidden_by=RegistryEntryHider.USER,
+            )
+            for index, row in enumerate(rows)
+        ]
+        cleanup_coordinator.data["sites"] = {}
+        cleanup_coordinator.data["devices"] = devices
+        added: list[SensorEntity] = []
+        with patch.object(
+            entity_registry, "async_remove", wraps=entity_registry.async_remove
+        ) as remove:
+            await async_setup_entry(hass, mock_config_entry, added.extend)
+
+        assert not added
+        remove.assert_not_called()
+        cleanup_coordinator.async_add_listener.assert_called_once()
+        for row in rows:
+            assert entity_registry.async_get(row.entity_id) == row
+
     @pytest.mark.parametrize(
         ("translation_key", "device_present", "removed"),
         [

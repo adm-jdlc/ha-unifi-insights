@@ -1314,6 +1314,75 @@ async def test_compensation_never_takes_over_interfering_registry_rows(
     assert "Unable to fully roll back" in caplog.text
 
 
+async def test_restoration_already_completed_is_a_native_noop(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Accept an already restored exact row without updates, saves or audit events."""
+    entry = _entry(hass)
+    other = _entry(hass, "console_b", "entry_b")
+    previous = _row(
+        entity_registry,
+        entry,
+        "sensor",
+        build_site_unique_id("console_a", "site_shared", "active_vouchers"),
+        "active_vouchers",
+    )
+    previous = entity_registry.async_update_entity(
+        previous.entity_id,
+        name="Custom voucher sensor",
+        disabled_by=er.RegistryEntryDisabler.USER,
+        hidden_by=er.RegistryEntryHider.USER,
+    )
+    foreign = _row(
+        entity_registry,
+        other,
+        "sensor",
+        build_site_unique_id("console_b", "site_shared", "active_vouchers"),
+        "active_vouchers",
+    )
+    updates = async_rekey_site_entities(hass, entry, "console_new")
+    assert updates == (
+        (
+            previous,
+            build_site_unique_id("console_new", "site_shared", "active_vouchers"),
+        ),
+    )
+    current = entity_registry.async_update_entity(
+        previous.entity_id, new_unique_id=previous.unique_id
+    )
+    await hass.async_block_till_done()
+    before = attr.asdict(current)
+    foreign_before = attr.asdict(foreign)
+    events = []
+    unsubscribe = hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, events.append)
+    try:
+        with (
+            patch.object(
+                entity_registry,
+                "async_update_entity",
+                wraps=entity_registry.async_update_entity,
+            ) as update,
+            patch.object(
+                entity_registry,
+                "async_schedule_save",
+                wraps=entity_registry.async_schedule_save,
+            ) as save,
+        ):
+            assert async_restore_site_entity_identities(hass, entry, updates)
+            assert async_restore_site_entity_identities(hass, entry, updates)
+            await hass.async_block_till_done()
+        update.assert_not_called()
+        save.assert_not_called()
+    finally:
+        unsubscribe()
+    assert not events
+    assert attr.asdict(entity_registry.async_get(previous.entity_id)) == before
+    assert attr.asdict(entity_registry.async_get(foreign.entity_id)) == foreign_before
+    assert "Unable to fully roll back" not in caplog.text
+
+
 @pytest.mark.parametrize(
     "failure",
     [
