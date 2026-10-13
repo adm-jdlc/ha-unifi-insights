@@ -6982,6 +6982,7 @@ class TestUnifiFacadeCoordinator:
     async def test_async_play_chime(self, facade_coordinator: UnifiFacadeCoordinator):
         """The vendored no-I/O stub surfaces a translated unsupported error."""
         client = facade_coordinator.protect_client
+        assert client is not None
         client.chimes = ChimesEndpoint(client)
         with pytest.raises(HomeAssistantError) as raised:
             await facade_coordinator.async_play_chime("chime1")
@@ -7037,6 +7038,7 @@ class TestUnifiFacadeCoordinator:
         self, facade_coordinator: UnifiFacadeCoordinator
     ):
         """Use the ringtone setter and refresh only after a successful write."""
+        assert facade_coordinator.protect_client is not None
         facade_coordinator.protect_client.chimes.set_ringtone = AsyncMock()
         with patch.object(
             facade_coordinator._protect_coordinator,
@@ -7061,6 +7063,7 @@ class TestUnifiFacadeCoordinator:
         self, facade_coordinator: UnifiFacadeCoordinator, error: Exception
     ) -> None:
         """Validation and API failures become a user-facing error without refresh."""
+        assert facade_coordinator.protect_client is not None
         facade_coordinator.protect_client.chimes.set_ringtone = AsyncMock(
             side_effect=error
         )
@@ -7081,6 +7084,7 @@ class TestUnifiFacadeCoordinator:
         self, facade_coordinator: UnifiFacadeCoordinator
     ) -> None:
         """The setter also works when no child coordinator needs a refresh."""
+        assert facade_coordinator.protect_client is not None
         facade_coordinator.protect_client.chimes.set_ringtone = AsyncMock()
         with patch.object(facade_coordinator, "_protect_coordinator", None):
             await facade_coordinator.async_set_chime_ringtone("chime1", "tone-2")
@@ -7094,10 +7098,12 @@ class TestUnifiFacadeCoordinator:
     ) -> None:
         """A recorded or raised refresh error cannot undo a successful PATCH."""
         client = facade_coordinator.protect_client
+        assert client is not None
         client.chimes.set_ringtone = AsyncMock()
         child = facade_coordinator._protect_coordinator
 
         async def refresh() -> None:
+            assert child is not None
             child.last_update_success = False
             if raises:
                 msg = "Synthetic refresh failure"
@@ -7105,6 +7111,7 @@ class TestUnifiFacadeCoordinator:
 
         with patch.object(child, "async_request_refresh", side_effect=refresh):
             await facade_coordinator.async_set_chime_ringtone("chime1", "tone-new")
+        assert client is not None
         client.chimes.set_ringtone.assert_awaited_once_with("chime1", "tone-new")
         assert child.last_update_success is False
         assert ("ringtone was updated" in caplog.text) == raises

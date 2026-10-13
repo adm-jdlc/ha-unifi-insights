@@ -410,6 +410,7 @@ class TestUnifiProtectChimePlayButton:
         assert button._device_id == "chime1"
         assert button._attr_translation_key == "play"
         assert button.unique_id == "unifi_insights_chime_chime1_play"
+        assert button.device_info is not None
         assert button.device_info["identifiers"] == {(DOMAIN, "protect_chime_chime1")}
 
     async def test_chime_button_attributes(self, hass: HomeAssistant, mock_coordinator):
@@ -420,6 +421,7 @@ class TestUnifiProtectChimePlayButton:
         )
 
         attrs = button.extra_state_attributes
+        assert attrs is not None
         assert attrs["chime_id"] == "chime1"
         assert attrs["chime_name"] == "Front Door Chime"
         assert attrs["chime_ringtone_id"] == "mechanical"
@@ -505,6 +507,7 @@ class TestUnifiProtectChimePlayButton:
         button = UnifiProtectChimePlayButton(mock_coordinator, "chime1")
         mock_coordinator.data = data
         button._update_attributes()
+        assert button.extra_state_attributes is not None
         assert button.extra_state_attributes["chime_ringtone_id"] is None
 
 
@@ -1023,6 +1026,7 @@ class TestChimePlayButtonEdgeCases:
         )
 
         attrs = button.extra_state_attributes
+        assert attrs is not None
         assert attrs["chime_ringtone_id"] is None
 
     async def test_chime_button_press_with_empty_ring_settings(
@@ -2003,12 +2007,14 @@ class TestUnifiClientWakeButton:
             "clients": {"site1": {"c1": {"macAddress": mac, "name": "Workstation"}}},
         }
         btn_gw = UnifiClientWakeButton(coordinator, mac, site_id="site1")
+        assert btn_gw.device_info is not None
         for _, identifier in btn_gw.device_info["identifiers"]:
             assert not identifier.startswith("client_")
 
         # Offline unseeded client
         coordinator.data = {"devices": {}, "clients": {}}
         btn_offline = UnifiClientWakeButton(coordinator, mac, site_id="site1")
+        assert btn_offline.device_info is not None
         for _, identifier in btn_offline.device_info["identifiers"]:
             assert not identifier.startswith("client_")
 
@@ -2231,10 +2237,12 @@ class TestWakeButtonSetup:
         )
         assert entity_id is not None
         row = registry.async_get(entity_id)
+        assert row is not None
         assert row.disabled_by is er.RegistryEntryDisabler.INTEGRATION
         assert row.original_name == "Wake Gaming PC"
         assert row.device_id is not None
         device = dr.async_get(hass).async_get(row.device_id)
+        assert device is not None
         assert device.identifiers == {(DOMAIN, "site1_gateway")}
         assert hass.states.get(entity_id) is None
         registry.async_update_entity(entity_id, disabled_by=None)
@@ -2252,7 +2260,9 @@ class TestWakeButtonSetup:
         state = hass.states.get(entity_id)
         assert state is not None
         assert state.attributes["friendly_name"] == "Home Gateway Wake Old PC"
-        assert registry.async_get(entity_id).device_id == device.id
+        entity_row = registry.async_get(entity_id)
+        assert entity_row is not None
+        assert entity_row.device_id == device.id
 
     async def test_wake_history_seed_cancelled_on_entry_unload(
         self, hass: HomeAssistant, init_integration: MockConfigEntry
@@ -2343,6 +2353,7 @@ class TestWakeButtonSetup:
         wakes = [e for e in added if isinstance(e, UnifiClientWakeButton)]
         assert len(wakes) == 1
         button = wakes[0]
+        assert button.device_info is not None
         assert button.device_info["identifiers"] == (
             device.identifiers if existing_device else {(DOMAIN, "site_site1")}
         )
@@ -2352,7 +2363,9 @@ class TestWakeButtonSetup:
         coordinator.async_wake_client.assert_awaited_once_with(
             mac, client_name=saved_name
         )
-        assert er.async_get(hass).async_get(row.entity_id).disabled_by is None
+        entity_entry = er.async_get(hass).async_get(row.entity_id)
+        assert entity_entry is not None
+        assert entity_entry.disabled_by is None
         await started.wait()
         proceed.set()
         await hass.async_block_till_done(wait_background_tasks=True)

@@ -638,11 +638,13 @@ class TestUnifiProtectChimeRingtoneSelect:
         assert entity._device_id == "chime1"
         assert entity._attr_translation_key == "ringtone"
         assert entity.unique_id == "unifi_insights_chime_chime1_ringtone"
+        assert entity.device_info is not None
         assert entity.device_info["identifiers"] == {
             ("unifi_insights", "protect_chime_chime1")
         }
         assert entity._attr_current_option == "tone-2"
         assert entity._attr_options == ["tone-1", "tone-2"]
+        assert entity.extra_state_attributes is not None
         assert entity.extra_state_attributes["chime_ringtone_id"] == "tone-2"
 
     @pytest.mark.parametrize(
@@ -674,6 +676,7 @@ class TestUnifiProtectChimeRingtoneSelect:
             chime_id="chime1",
         )
         assert entity._attr_current_option is None
+        assert entity.extra_state_attributes is not None
         assert entity.extra_state_attributes["chime_ringtone_id"] is None
         assert entity._attr_options == ["tone-1", "tone-2"]
 
