@@ -332,10 +332,10 @@ class UnifiProtectChimeRingtoneSelect(UnifiProtectEntity, SelectEntity):
 
         # The API has no ringtone catalogue; offer only IDs observed on this console.
         ringtone_ids: set[str] = set()
-        for data in chimes.values():
-            if not isinstance(data, dict):
+        for chime in chimes.values():
+            if not isinstance(chime, dict):
                 continue
-            settings = data.get("ringSettings")
+            settings = chime.get("ringSettings")
             if not isinstance(settings, list):
                 continue
             for setting in settings:
