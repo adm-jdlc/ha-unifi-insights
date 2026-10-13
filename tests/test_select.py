@@ -1,6 +1,6 @@
 """Tests for UniFi Protect select entities."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
@@ -740,13 +740,13 @@ class TestUnifiProtectChimeRingtoneSelect:
         entity = UnifiProtectChimeRingtoneSelect(
             coordinator=ringtone_coordinator, chime_id="chime1"
         )
-        entity.async_write_ha_state = MagicMock()
-        await entity.async_select_option("tone-1")
+        with patch.object(entity, "async_write_ha_state") as write_state:
+            await entity.async_select_option("tone-1")
         ringtone_coordinator.async_set_chime_ringtone.assert_awaited_once_with(
             "chime1", "tone-1"
         )
         assert entity._attr_current_option == "tone-1"
-        entity.async_write_ha_state.assert_called_once()
+        write_state.assert_called_once()
 
     async def test_async_select_option_legacy_fallback(
         self, ringtone_coordinator: MagicMock
@@ -757,8 +757,8 @@ class TestUnifiProtectChimeRingtoneSelect:
         entity = UnifiProtectChimeRingtoneSelect(
             coordinator=ringtone_coordinator, chime_id="chime1"
         )
-        entity.async_write_ha_state = MagicMock()
-        await entity.async_select_option("tone-1")
+        with patch.object(entity, "async_write_ha_state"):
+            await entity.async_select_option("tone-1")
         ringtone_coordinator.protect_client.chimes.set_ringtone.assert_awaited_once_with(
             chime_id="chime1", ringtone_id="tone-1"
         )
@@ -810,7 +810,7 @@ class TestUnifiProtectChimeRingtoneSelect:
         )
         with pytest.raises(HomeAssistantError, match="Ringtone ID not found"):
             await entity.async_select_option("unobserved-tone")
-        ringtone_coordinator.async_set_chime_ringtone.assert_not_awaited()
+        ringtone_coordinator.async_set_chime_ringtone.assert_not_called()
 
 
 class TestUnifiProtectPTZPresetSelect:

@@ -6983,13 +6983,17 @@ class TestUnifiFacadeCoordinator:
         """The vendored no-I/O stub surfaces a translated unsupported error."""
         client = facade_coordinator.protect_client
         assert client is not None
-        client.chimes = ChimesEndpoint(client)
-        with pytest.raises(HomeAssistantError) as raised:
+        with (
+            patch.object(client, "chimes", ChimesEndpoint(client)),
+            patch.object(client, "build_api_path") as build_api_path,
+            patch.object(client, "_post") as post,
+            pytest.raises(HomeAssistantError) as raised,
+        ):
             await facade_coordinator.async_play_chime("chime1")
         assert raised.value.translation_key == "chime_playback_unsupported"
         assert raised.value.translation_domain == DOMAIN
-        client.build_api_path.assert_not_called()
-        client._post.assert_not_called()
+        build_api_path.assert_not_called()
+        post.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_async_start_ptz_patrol(
@@ -7040,6 +7044,7 @@ class TestUnifiFacadeCoordinator:
         """Use the ringtone setter and refresh only after a successful write."""
         assert facade_coordinator.protect_client is not None
         facade_coordinator.protect_client.chimes.set_ringtone = AsyncMock()
+        facade_coordinator.protect_client.chimes.update = AsyncMock()
         with patch.object(
             facade_coordinator._protect_coordinator,
             "async_request_refresh",
@@ -7112,6 +7117,7 @@ class TestUnifiFacadeCoordinator:
         with patch.object(child, "async_request_refresh", side_effect=refresh):
             await facade_coordinator.async_set_chime_ringtone("chime1", "tone-new")
         assert client is not None
+        assert child is not None
         client.chimes.set_ringtone.assert_awaited_once_with("chime1", "tone-new")
         assert child.last_update_success is False
         assert ("ringtone was updated" in caplog.text) == raises
