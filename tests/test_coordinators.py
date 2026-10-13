@@ -6996,6 +6996,21 @@ class TestUnifiFacadeCoordinator:
         post.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_async_play_chime_generic_failure(
+        self, facade_coordinator: UnifiFacadeCoordinator
+    ):
+        """Unexpected play failures are wrapped with the chime-specific message."""
+        facade_coordinator.protect_client.chimes.play = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        with pytest.raises(
+            HomeAssistantError, match="Unable to play chime chime1"
+        ) as raised:
+            await facade_coordinator.async_play_chime("chime1")
+        assert isinstance(raised.value.__cause__, RuntimeError)
+        assert str(raised.value.__cause__) == "boom"
+
+    @pytest.mark.asyncio
     async def test_async_start_ptz_patrol(
         self, facade_coordinator: UnifiFacadeCoordinator
     ):
