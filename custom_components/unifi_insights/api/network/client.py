@@ -25,6 +25,7 @@ from .endpoints import (
     DNSEndpoint,
     FirewallEndpoint,
     LagsEndpoint,
+    NatRulesEndpoint,
     NetworksEndpoint,
     PortForwardsEndpoint,
     ReportsEndpoint,
@@ -32,6 +33,7 @@ from .endpoints import (
     RoutesEndpoint,
     SitesEndpoint,
     StacksEndpoint,
+    StaticRoutesEndpoint,
     TrafficEndpoint,
     TrafficRulesEndpoint,
     VouchersEndpoint,
@@ -152,6 +154,8 @@ class UniFiNetworkClient(BaseUniFiClient):
         self._vpn_clients = VpnClientsEndpoint(self)
         self._port_forwards = PortForwardsEndpoint(self)
         self._traffic_rules = TrafficRulesEndpoint(self)
+        self._nat_rules = NatRulesEndpoint(self)
+        self._static_routes = StaticRoutesEndpoint(self)
         self._reports = ReportsEndpoint(self)
 
     @property
@@ -368,6 +372,16 @@ class UniFiNetworkClient(BaseUniFiClient):
     def traffic_rules(self) -> TrafficRulesEndpoint:
         """Access traffic rule endpoints."""
         return self._traffic_rules
+
+    @property
+    def nat_rules(self) -> NatRulesEndpoint:
+        """Access NAT rule endpoints."""
+        return self._nat_rules
+
+    @property
+    def static_routes(self) -> StaticRoutesEndpoint:
+        """Access static route endpoints."""
+        return self._static_routes
 
     @property
     def reports(self) -> ReportsEndpoint:

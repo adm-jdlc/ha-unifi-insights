@@ -23,6 +23,9 @@ from custom_components.unifi_insights import (
     button as button_platform,
 )
 from custom_components.unifi_insights import (
+    event as event_platform,
+)
+from custom_components.unifi_insights import (
     image as image_platform,
 )
 from custom_components.unifi_insights import (
@@ -883,7 +886,13 @@ async def _discover_all(hass, entry, coordinator):
     )
     coordinator.hass = hass
     entities = []
-    for platform in (sensor_platform, number_platform, button_platform, image_platform):
+    for platform in (
+        sensor_platform,
+        number_platform,
+        button_platform,
+        image_platform,
+        event_platform,
+    ):
         await platform.async_setup_entry(hass, entry, entities.extend)
     return entities
 
@@ -970,7 +979,13 @@ async def test_missing_namespace_skips_until_later_discovery_and_reload(
     entry.runtime_data = SimpleNamespace(
         coordinator=mock_coordinator, mobility_coordinator=None
     )
-    for platform in (sensor_platform, number_platform, button_platform, image_platform):
+    for platform in (
+        sensor_platform,
+        number_platform,
+        button_platform,
+        image_platform,
+        event_platform,
+    ):
         await platform.async_setup_entry(hass, entry, added.extend)
     assert [e.unique_id for e in added] == [owned_legacy.unique_id]
     assert (
@@ -987,7 +1002,7 @@ async def test_missing_namespace_skips_until_later_discovery_and_reload(
     )
     for callback in callbacks:
         callback()
-    expected_count = 3 + 2 + 3 + 5 + 1 + 1
+    expected_count = 3 + 2 + 3 + 5 + 1 + 1 + 1
     assert len(added) == expected_count
     for entity in added:
         domain = next(

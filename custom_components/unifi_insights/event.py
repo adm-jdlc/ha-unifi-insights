@@ -1,4 +1,4 @@
-"""Support for UniFi Protect events."""
+"""Support for UniFi Protect events and network rule change events."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from homeassistant.components.event import (
 from homeassistant.core import callback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .console_identity import resolve_console_namespace
 from .const import (
     DOMAIN,
     MANUFACTURER,
@@ -21,6 +22,7 @@ from .const import (
     SMART_DETECT_VEHICLE,
 )
 from .entity import get_field
+from .network_rule_audit_event import discover_network_rule_change_events
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -46,24 +48,34 @@ EVENT_TYPE_SENSOR_CLOSE = "closed"
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,  # noqa: ARG001
+    hass: HomeAssistant,
     entry: UnifiInsightsConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up event entities for UniFi Insights integration."""
     coordinator = entry.runtime_data.coordinator
 
-    # Skip if Protect API is not available
-    if not coordinator.protect_client:
-        return
-
     known_event_keys: set[tuple[str, str]] = set()
+    known_rule_audit_sites: set[str] = set()
     first_setup = True
 
     @callback
     def async_discover_events() -> None:
         """Discover and add new event entities."""
         nonlocal first_setup
+        # Rule change events belong to the Network application, so they are
+        # discovered whether or not this console runs Protect.
+        rule_events = discover_network_rule_change_events(
+            coordinator,
+            known_rule_audit_sites,
+            hass=hass,
+            entry=entry,
+            namespace=resolve_console_namespace(entry),
+        )
+        if rule_events:
+            async_add_entities(rule_events)
+        if not coordinator.protect_client:
+            return
         if (
             not coordinator.data
             or not isinstance(coordinator.data, dict)

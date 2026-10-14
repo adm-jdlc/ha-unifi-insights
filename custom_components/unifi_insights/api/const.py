@@ -51,11 +51,15 @@ NETWORK_LEGACY_V2_PATH: Final[str] = "/proxy/network/v2/api"
 ENDPOINT_TRAFFIC_ROUTES: Final[str] = "trafficroutes"
 # Traffic rules (app, domain, IP and internet blocking); separate from trafficroutes.
 ENDPOINT_TRAFFIC_RULES: Final[str] = "trafficrules"
+# Custom NAT rules (v2 only; reference-derived, no GET-by-id).
+ENDPOINT_NAT_RULES: Final[str] = "nat"
 
 # Network legacy REST endpoints
 ENDPOINT_NETWORKCONF: Final[str] = "rest/networkconf"
 # Port forwarding rules (classic API only; v2 "portforwards" is 404 on Network 11).
 ENDPOINT_PORT_FORWARD: Final[str] = "rest/portforward"
+# Static routes (classic API only; v2 "static-route" is 404 on Network 11).
+ENDPOINT_STATIC_ROUTES: Final[str] = "rest/routing"
 # Live state of VPN clients and site-to-site tunnels (v2, per connection).
 ENDPOINT_VPN_CONNECTIONS: Final[str] = "vpn/connections"
 

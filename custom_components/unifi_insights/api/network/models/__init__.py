@@ -50,6 +50,7 @@ from .lag import (
     McLagPeer,
     McLagRole,
 )
+from .nat_rule import NatRule, is_predefined_nat_rule
 from .network import Network, NetworkPurpose, NetworkType
 from .port_forward import PortForward
 from .report import (
@@ -70,6 +71,7 @@ from .resources import (
 from .routes import PolicyBasedRoute
 from .site import Site, SiteHealth
 from .stack import SwitchStack, SwitchStackLag, SwitchStackMember
+from .static_route import StaticRoute
 from .traffic import (
     Country,
     DPIApplication,
@@ -153,6 +155,9 @@ __all__ = [
     "VPNTunnelStatus",
     "WANInterface",
     "WANStatus",
+    # NAT Rule
+    "NatRule",
+    "is_predefined_nat_rule",
     # Port Forward
     "PortForward",
     # Routes
@@ -160,6 +165,8 @@ __all__ = [
     # Site
     "Site",
     "SiteHealth",
+    # Static Route
+    "StaticRoute",
     # Traffic
     "Country",
     "DPIApplication",

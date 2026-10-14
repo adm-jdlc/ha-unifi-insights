@@ -25,6 +25,12 @@ from .const import (
     VIDEO_MODE_DEFAULT,
     VIDEO_MODE_HIGH_FPS,
 )
+from .coordinators.config_sections import (
+    is_predefined_firewall_rule as _is_predefined_firewall_rule,
+)
+from .coordinators.config_sections import (
+    is_predefined_nat_rule,
+)
 from .entity import (
     UnifiProtectEntity,
     async_call_coordinator_action,
@@ -56,18 +62,6 @@ def _get_firewall_rule_action(rule_data: dict[str, Any]) -> str | None:
         action_type = action.get("type")
         return str(action_type) if action_type is not None else None
     return str(action) if action is not None else None
-
-
-def _is_predefined_firewall_rule(rule_data: dict[str, Any]) -> bool:
-    """Return True when a firewall rule appears to be system-defined."""
-    metadata = rule_data.get("metadata")
-    if isinstance(metadata, dict) and metadata.get("origin") == "SYSTEM_DEFINED":
-        return True
-    return bool(
-        rule_data.get("predefined")
-        or rule_data.get("isPredefined")
-        or rule_data.get("isSystem")
-    )
 
 
 def _find_gateway_device_id(
@@ -106,6 +100,7 @@ def _stale_switch_unique_ids(
     unique_id_suffix: str,
     data_key: str,
     availability_fn: Callable[[str], bool],
+    is_hidden_fn: Callable[[Any], bool] | None = None,
 ) -> set[str]:
     """
     Return unique_ids of switches whose backing object no longer exists.
@@ -171,7 +166,9 @@ def _stale_switch_unique_ids(
         if not availability_fn(site_id):
             continue
         qualified_site_ids.add(site_id)
-        for object_id in site_objects:
+        for object_id, object_data in site_objects.items():
+            if is_hidden_fn is not None and is_hidden_fn(object_data):
+                continue
             live_unique_ids.add(f"{site_id}_{object_id}{unique_id_suffix}")
 
     if not qualified_site_ids:
@@ -226,42 +223,62 @@ def _prune_orphaned_switch_entities(
         if reg_entry.domain == "switch" and reg_entry.platform == DOMAIN
     ]
 
-    specs: tuple[tuple[str, str, Callable[[str], bool]], ...] = (
+    specs: tuple[
+        tuple[str, str, Callable[[str], bool], Callable[[Any], bool] | None], ...
+    ] = (
         (
             "_policy_based_route",
             "policy_based_routes",
             lambda _site_id: coordinator.config_available,
+            None,
         ),
         (
             "_firewall_rule",
             "firewall_rules",
             coordinator.firewall_available,
+            None,
         ),
         (
             "_vpn_client",
             "vpn_clients",
             lambda _site_id: coordinator.config_available,
+            None,
         ),
         (
             "_port_forward",
             "port_forwards",
             coordinator.port_forwards_available,
+            None,
         ),
         (
             "_traffic_rule",
             "traffic_rules",
             coordinator.traffic_rules_available,
+            None,
+        ),
+        (
+            "_nat_rule",
+            "nat_rules",
+            coordinator.nat_rules_available,
+            is_predefined_nat_rule,
+        ),
+        (
+            "_static_route",
+            "static_routes",
+            coordinator.static_routes_available,
+            None,
         ),
     )
 
     stale_unique_ids: set[str] = set()
-    for unique_id_suffix, data_key, availability_fn in specs:
+    for unique_id_suffix, data_key, availability_fn, is_hidden_fn in specs:
         stale_unique_ids |= _stale_switch_unique_ids(
             coordinator,
             reg_entries,
             unique_id_suffix=unique_id_suffix,
             data_key=data_key,
             availability_fn=availability_fn,
+            is_hidden_fn=is_hidden_fn,
         )
 
     for reg_entry in reg_entries:

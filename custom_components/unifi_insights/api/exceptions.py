@@ -89,6 +89,10 @@ class UniFiNotFoundError(UniFiResponseError):
     """Raised when a resource is not found (404)."""
 
 
+class UniFiRuleNotEditableError(UniFiError):
+    """Raised when a rule is managed by the console and must not be written."""
+
+
 class UniFiGlobalAlarmManagerError(UniFiResponseError):
     """Raised when arming or disarming is refused (400) by the global alarm manager."""
 

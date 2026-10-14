@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Final, NoReturn
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.core import SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import (
     config_validation as cv,
@@ -50,6 +51,7 @@ from .const import (
     SERVICE_CARRIER_SUSPEND_SUBSCRIBER,
     SERVICE_CREATE_LIVEVIEW,
     SERVICE_DELETE_VOUCHER,
+    SERVICE_EXPORT_NETWORK_RULES,
     SERVICE_GENERATE_VOUCHER,
     SERVICE_PLAY_CHIME_RINGTONE,
     SERVICE_POWER_CYCLE_PORT,
@@ -74,11 +76,13 @@ from .const import (
     VIDEO_MODE_SPORT,
 )
 from .coordinators.carrier_fabric import InvalidSubscriberIdError
+from .coordinators.rule_audit import RULE_TYPES
+from .diagnostics import redact_network_rule_export
 from .helpers import is_doorbell_camera_model
 from .led_level import percent_to_led_level
 
 if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant, ServiceCall
+    from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -1481,6 +1485,16 @@ DELETE_VOUCHER_SCHEMA = vol.Schema(
     }
 )
 
+# Schema for export_network_rules service
+EXPORT_NETWORK_RULES_SCHEMA = vol.Schema(
+    {
+        vol.Optional("site_id"): cv.string,
+        vol.Optional("console_id"): cv.string,
+        vol.Optional("rule_types"): vol.All(cv.ensure_list, [vol.In(RULE_TYPES)]),
+        vol.Optional("redact", default=True): cv.boolean,
+    }
+)
+
 # Schema for trigger_alarm service
 TRIGGER_ALARM_SCHEMA = vol.Schema(
     {
@@ -1983,6 +1997,92 @@ async def _async_handle_remove_clients(hass: HomeAssistant, call: ServiceCall) -
             translation_key="remove_clients_failed",
             translation_placeholders={"failures": msg},
         )
+
+
+def _get_coordinator_for_rule_export(
+    hass: HomeAssistant, *, site_id: str | None, console_id: str | None
+) -> Any:
+    """
+    Return the console facade a rule export runs against.
+
+    ``console_id`` (entry title or entry ID) names the console directly. Without
+    it the console is found from ``site_id``, or is the only configured one.
+    Raises a translated ``ServiceValidationError`` when the target is unknown
+    or ambiguous.
+    """
+    entries = [
+        entry
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if hasattr(entry, "runtime_data")
+        and entry.runtime_data
+        and not isinstance(entry.runtime_data, CarrierFabricData)
+    ]
+    if not entries:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="no_network_console",
+        )
+    if console_id:
+        matches = [e for e in entries if _entry_matches_console(e, console_id)]
+        if len(matches) != 1:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key=(
+                    "export_target_ambiguous" if matches else "export_target_not_found"
+                ),
+                translation_placeholders={"target": console_id},
+            )
+        entry = matches[0]
+        if site_id and not _entry_has_site(entry, site_id):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="export_site_not_on_console",
+                translation_placeholders={"site_id": site_id, "console": console_id},
+            )
+        return entry.runtime_data.coordinator
+    if site_id is None and len(entries) > 1:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="export_console_required",
+        )
+    if site_id is not None and not any(_entry_has_site(e, site_id) for e in entries):
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="export_target_not_found",
+            translation_placeholders={"target": site_id},
+        )
+    try:
+        coordinator, _ = _get_coordinator_for_network_resource(hass, site_id=site_id)
+    except ServiceValidationError as err:
+        # The site exists, so what is left is the shared helper's untranslated
+        # "more than one console has this site" error.
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="export_target_ambiguous",
+            translation_placeholders={"target": str(site_id)},
+        ) from err
+    return coordinator
+
+
+async def _async_handle_export_network_rules(
+    hass: HomeAssistant, call: ServiceCall
+) -> ServiceResponse:
+    """Return a fresh export of the network rules of one console."""
+    site_id = call.data.get("site_id")
+    coordinator = _get_coordinator_for_rule_export(
+        hass, site_id=site_id, console_id=call.data.get("console_id")
+    )
+    document: dict[str, Any] = await coordinator.async_export_network_rules(
+        [site_id] if site_id else None, call.data.get("rule_types") or None
+    )
+    if not document["sites"]:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="export_no_sites",
+        )
+    if call.data["redact"]:
+        document = redact_network_rule_export(document)
+    return document
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
@@ -2586,6 +2686,19 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         schema=DELETE_VOUCHER_SCHEMA,
     )
 
+    async def async_handle_export_network_rules(call: ServiceCall) -> ServiceResponse:
+        """Handle the export_network_rules service call."""
+        return await _async_handle_export_network_rules(hass, call)
+
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        SERVICE_EXPORT_NETWORK_RULES,
+        async_handle_export_network_rules,
+        schema=EXPORT_NETWORK_RULES_SCHEMA,  # type: ignore[arg-type]
+        supports_response=SupportsResponse.ONLY,
+    )
+
     # Register UniFi Protect services
     hass.services.async_register(
         DOMAIN,
@@ -2697,6 +2810,9 @@ async def async_unload_services(hass: HomeAssistant) -> None:
 
     if hass.services.has_service(DOMAIN, SERVICE_DELETE_VOUCHER):
         hass.services.async_remove(DOMAIN, SERVICE_DELETE_VOUCHER)
+
+    if hass.services.has_service(DOMAIN, SERVICE_EXPORT_NETWORK_RULES):
+        hass.services.async_remove(DOMAIN, SERVICE_EXPORT_NETWORK_RULES)
 
     # Unload UniFi Protect services
     if hass.services.has_service(DOMAIN, SERVICE_TRIGGER_ALARM):

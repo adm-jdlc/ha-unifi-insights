@@ -8,6 +8,7 @@ from .devices import DevicesEndpoint
 from .dns import DNSEndpoint
 from .firewall import FirewallEndpoint
 from .lags import LagsEndpoint
+from .nat_rules import NatRulesEndpoint
 from .networks import NetworksEndpoint
 from .port_forwards import PortForwardsEndpoint
 from .reports import ReportsEndpoint
@@ -15,6 +16,7 @@ from .resources import ResourcesEndpoint
 from .routes import RoutesEndpoint
 from .sites import SitesEndpoint
 from .stacks import StacksEndpoint
+from .static_routes import StaticRoutesEndpoint
 from .traffic import TrafficEndpoint
 from .traffic_rules import TrafficRulesEndpoint
 from .vouchers import VouchersEndpoint
@@ -28,6 +30,7 @@ __all__ = [
     "DevicesEndpoint",
     "FirewallEndpoint",
     "LagsEndpoint",
+    "NatRulesEndpoint",
     "NetworksEndpoint",
     "PortForwardsEndpoint",
     "ReportsEndpoint",
@@ -35,6 +38,7 @@ __all__ = [
     "RoutesEndpoint",
     "SitesEndpoint",
     "StacksEndpoint",
+    "StaticRoutesEndpoint",
     "TrafficEndpoint",
     "TrafficRulesEndpoint",
     "VouchersEndpoint",

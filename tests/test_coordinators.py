@@ -26,6 +26,7 @@ from custom_components.unifi_insights.api import (
     UniFiNotFoundError,
     UniFiRateLimitError,
     UniFiResponseError,
+    UniFiRuleNotEditableError,
     UniFiTimeoutError,
 )
 from custom_components.unifi_insights.api.innerspace import (
@@ -77,6 +78,7 @@ from custom_components.unifi_insights.coordinators.config_sections import (
     async_fetch_site_routes,
     async_fetch_site_wifi_and_links,
     enrich_wifi,
+    is_predefined_nat_rule,
     map_legacy_site_names,
     resolve_report_site_name,
     rule_display_name,
@@ -176,6 +178,16 @@ def _create_mock_network_client() -> MagicMock:
     client.traffic_rules = MagicMock()
     client.traffic_rules.list_traffic_rules = AsyncMock(return_value=[])
     client.traffic_rules.update_traffic_rule = AsyncMock()
+
+    # NAT rules namespace
+    client.nat_rules = MagicMock()
+    client.nat_rules.list_nat_rules = AsyncMock(return_value=[])
+    client.nat_rules.update_nat_rule = AsyncMock()
+
+    # Static routes namespace
+    client.static_routes = MagicMock()
+    client.static_routes.list_static_routes = AsyncMock(return_value=[])
+    client.static_routes.update_static_route = AsyncMock()
 
     # WiFi namespace
     client.wifi = MagicMock()
@@ -558,6 +570,20 @@ _RULE_SECTION_PARAMS = [
         "list_traffic_rules",
         "traffic_rules_available",
         id="traffic_rule",
+    ),
+    pytest.param(
+        "nat_rules",
+        "nat_rules",
+        "list_nat_rules",
+        "nat_rules_available",
+        id="nat_rule",
+    ),
+    pytest.param(
+        "static_routes",
+        "static_routes",
+        "list_static_routes",
+        "static_routes_available",
+        id="static_route",
     ),
 ]
 
@@ -1384,6 +1410,15 @@ class TestUnifiConfigCoordinator:
         assert coordinator.data["port_forwards"] == {}
         assert coordinator.data["traffic_rules"] == {}
 
+    def test_initialization_has_nat_and_static_route_sections(
+        self, coordinator: UnifiConfigCoordinator
+    ) -> None:
+        """Test coordinator initialization includes NAT and static route sections."""
+        assert "nat_rules" in coordinator.data
+        assert "static_routes" in coordinator.data
+        assert coordinator.data["nat_rules"] == {}
+        assert coordinator.data["static_routes"] == {}
+
     @pytest.mark.parametrize(
         ("site_data", "expected"),
         [
@@ -1418,6 +1453,23 @@ class TestUnifiConfigCoordinator:
     ) -> None:
         """Test rule_display_name strips the name and falls back to the rule id."""
         assert rule_display_name(rule_data, "pf1", name_field) == expected
+
+    @pytest.mark.parametrize(
+        ("rule_data", "expected"),
+        [
+            ({"is_predefined": True}, True),
+            ({"is_predefined": True, "setting_preference": "manual"}, True),
+            ({"setting_preference": "auto"}, True),
+            ({"setting_preference": None}, True),
+            ({"is_predefined": False, "setting_preference": "manual"}, False),
+            ({}, False),
+            ({"is_predefined": "true"}, False),
+            ("not a dict", False),
+        ],
+    )
+    def test_is_predefined_nat_rule(self, rule_data: Any, *, expected: bool) -> None:
+        """Test is_predefined_nat_rule identifies controller-managed NAT rules."""
+        assert is_predefined_nat_rule(rule_data) is expected
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -6087,6 +6139,16 @@ class TestUnifiFacadeCoordinator:
         assert facade_coordinator_no_protect.data["protect"]["cameras"] == {}
         assert facade_coordinator_no_protect.data["protect"]["lights"] == {}
 
+    def test_aggregate_data_includes_rule_changes(
+        self,
+        facade_coordinator: UnifiFacadeCoordinator,
+        config_coordinator: UnifiConfigCoordinator,
+    ) -> None:
+        """Rule change records in config data are included in facade data."""
+        config_coordinator.data["rule_changes"] = {"site1": [{"sequence": 1}]}
+        facade_coordinator._aggregate_data()
+        assert facade_coordinator.data["rule_changes"] == {"site1": [{"sequence": 1}]}
+
     def test_get_site(self, facade_coordinator: UnifiFacadeCoordinator):
         """Test get_site delegation to config coordinator."""
         facade_coordinator._aggregate_data()
@@ -7769,6 +7831,22 @@ class TestUnifiFacadeCoordinator:
         assert facade_coordinator.data["port_forwards"] == {"site1": {"pf1": {}}}
         assert facade_coordinator.data["traffic_rules"] == {"site1": {"tr1": {}}}
 
+    def test_aggregate_data_includes_nat_and_static_route_sections(
+        self, facade_coordinator: UnifiFacadeCoordinator
+    ) -> None:
+        """Test aggregated data includes NAT and static route sections."""
+        facade_coordinator._config_coordinator.data["nat_rules"] = {
+            "site1": {"nat1": {}}
+        }
+        facade_coordinator._config_coordinator.data["static_routes"] = {
+            "site1": {"sr1": {}}
+        }
+        facade_coordinator._aggregate_data()
+        assert "nat_rules" in facade_coordinator.data
+        assert "static_routes" in facade_coordinator.data
+        assert facade_coordinator.data["nat_rules"] == {"site1": {"nat1": {}}}
+        assert facade_coordinator.data["static_routes"] == {"site1": {"sr1": {}}}
+
     @pytest.mark.parametrize(
         ("data_key", "endpoint_attr", "list_method", "avail_method"),
         _RULE_SECTION_PARAMS,
@@ -7862,6 +7940,258 @@ class TestUnifiFacadeCoordinator:
         )
 
     @pytest.mark.asyncio
+    async def test_async_set_nat_rule_enabled_uses_internal_reference(
+        self, facade_coordinator: UnifiFacadeCoordinator
+    ) -> None:
+        """NAT rule toggle resolves site ONLY via internalReference."""
+        facade_coordinator._config_coordinator.data = {
+            "sites": {
+                "site_alpha": {
+                    "id": "site_alpha",
+                    "name": "Office",
+                    "internalReference": "alpha",
+                },
+                "site_beta": {
+                    "id": "site_beta",
+                    "name": "Office",
+                    "internalReference": "beta",
+                },
+            }
+        }
+        facade_coordinator._device_coordinator._legacy_site_names = {
+            "site_alpha": "beta",
+            "site_beta": "beta",
+        }
+        facade_coordinator.network_client.nat_rules.update_nat_rule = AsyncMock()
+
+        await facade_coordinator.async_set_nat_rule_enabled(
+            "site_alpha", "nat1", enabled=False
+        )
+        facade_coordinator.network_client.nat_rules.update_nat_rule.assert_called_once_with(
+            "alpha", "nat1", enabled=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_export_network_rules_passes_console_and_sites(
+        self, facade_coordinator: UnifiFacadeCoordinator
+    ) -> None:
+        """The facade hands its client, sites and console identity to the builder."""
+        sites = {"s": {"id": "s", "internalReference": "default"}}
+        facade_coordinator._config_coordinator.data = {"sites": sites}
+        document = {"format_version": 1, "sites": {}}
+
+        with patch(
+            "custom_components.unifi_insights.coordinators.facade."
+            "async_build_rule_export",
+            AsyncMock(return_value=document),
+        ) as build:
+            result = await facade_coordinator.async_export_network_rules(
+                ["s"], ["nat_rule"]
+            )
+
+        assert result is document
+        build.assert_awaited_once()
+        assert build.await_args is not None
+        assert build.await_args.args == (facade_coordinator.network_client, sites)
+        entry = facade_coordinator.config_entry
+        assert build.await_args.kwargs == {
+            "console": {"entry_id": entry.entry_id, "title": entry.title},
+            "site_ids": ["s"],
+            "rule_types": ["nat_rule"],
+            "is_unsupported": (
+                facade_coordinator._config_coordinator._is_unsupported_response
+            ),
+        }
+
+    @pytest.mark.asyncio
+    async def test_async_export_network_rules_without_a_config_entry(
+        self, facade_coordinator: UnifiFacadeCoordinator
+    ) -> None:
+        """Without a config entry the console identity is exported as unknown."""
+        facade_coordinator._config_coordinator.data = {"sites": {}}
+        facade_coordinator.config_entry = None
+
+        with patch(
+            "custom_components.unifi_insights.coordinators.facade."
+            "async_build_rule_export",
+            AsyncMock(return_value={}),
+        ) as build:
+            await facade_coordinator.async_export_network_rules()
+
+        assert build.await_args is not None
+        assert build.await_args.kwargs["console"] == {"entry_id": None, "title": None}
+
+    @pytest.mark.asyncio
+    async def test_async_set_nat_rule_enabled_console_managed_refreshes_and_raises(
+        self, facade_coordinator: UnifiFacadeCoordinator
+    ) -> None:
+        """UniFiRuleNotEditableError requests refresh and raises translated error."""
+        facade_coordinator._config_coordinator.data = {
+            "sites": {"site1": {"id": "site1", "internalReference": "default"}},
+            "nat_rules": {"site1": {"nat1": {"description": "DNS"}}},
+        }
+        facade_coordinator.network_client.nat_rules.update_nat_rule = AsyncMock(
+            side_effect=UniFiRuleNotEditableError(
+                "NAT rule nat1 is managed by the console"
+            )
+        )
+        facade_coordinator.async_request_refresh = AsyncMock()
+
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await facade_coordinator.async_set_nat_rule_enabled(
+                "site1", "nat1", enabled=False
+            )
+
+        facade_coordinator.async_request_refresh.assert_awaited_once()
+        assert exc_info.value.translation_key == "network_rule_console_managed"
+
+    @pytest.mark.parametrize(
+        ("setter_name", "endpoint_mock_path", "rule_type_placeholder"),
+        [
+            ("async_set_nat_rule_enabled", "nat_rules.update_nat_rule", "NAT rule"),
+            (
+                "async_set_static_route_enabled",
+                "static_routes.update_static_route",
+                "static route",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_async_set_new_rule_enabled_not_found_is_translated(
+        self,
+        facade_coordinator: UnifiFacadeCoordinator,
+        setter_name: str,
+        endpoint_mock_path: str,
+        rule_type_placeholder: str,
+    ) -> None:
+        """A vanished rule raises the translated error and requests a refresh."""
+        if "nat" in setter_name:
+            section_key = "nat_rules"
+            rule_id = "nat1"
+            rule_record = {"description": "DNS"}
+            expected_name = "DNS"
+        else:
+            section_key = "static_routes"
+            rule_id = "sr1"
+            rule_record = {"name": "Lab"}
+            expected_name = "Lab"
+
+        facade_coordinator._config_coordinator.data = {
+            "sites": {"site1": {"id": "site1", "internalReference": "default"}},
+            section_key: {"site1": {rule_id: rule_record}},
+        }
+        ep_name, meth_name = endpoint_mock_path.split(".")
+        setattr(
+            getattr(facade_coordinator.network_client, ep_name),
+            meth_name,
+            AsyncMock(
+                side_effect=UniFiNotFoundError(
+                    f"Rule {rule_id} not found", status_code=404
+                )
+            ),
+        )
+        facade_coordinator.async_request_refresh = AsyncMock()
+
+        setter = getattr(facade_coordinator, setter_name)
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await setter("site1", rule_id, enabled=True)
+
+        assert exc_info.value.translation_domain == DOMAIN
+        assert exc_info.value.translation_key == "network_rule_not_found"
+        assert exc_info.value.translation_placeholders == {
+            "rule_type": rule_type_placeholder,
+            "rule_name": expected_name,
+        }
+        facade_coordinator.async_request_refresh.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("setter_name", "endpoint_mock_path", "rule_type_placeholder"),
+        [
+            ("async_set_nat_rule_enabled", "nat_rules.update_nat_rule", "NAT rule"),
+            (
+                "async_set_static_route_enabled",
+                "static_routes.update_static_route",
+                "static route",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_async_set_new_rule_enabled_api_error_is_translated(
+        self,
+        facade_coordinator: UnifiFacadeCoordinator,
+        setter_name: str,
+        endpoint_mock_path: str,
+        rule_type_placeholder: str,
+    ) -> None:
+        """API error during rule toggle raises translated error."""
+        if "nat" in setter_name:
+            section_key = "nat_rules"
+            rule_id = "nat1"
+            rule_record = {"description": "DNS"}
+            expected_name = "DNS"
+        else:
+            section_key = "static_routes"
+            rule_id = "sr1"
+            rule_record = {"name": "Lab"}
+            expected_name = "Lab"
+
+        facade_coordinator._config_coordinator.data = {
+            "sites": {"site1": {"id": "site1", "internalReference": "default"}},
+            section_key: {"site1": {rule_id: rule_record}},
+        }
+        ep_name, meth_name = endpoint_mock_path.split(".")
+        setattr(
+            getattr(facade_coordinator.network_client, ep_name),
+            meth_name,
+            AsyncMock(side_effect=UniFiConnectionError("Connection failed")),
+        )
+
+        setter = getattr(facade_coordinator, setter_name)
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await setter("site1", rule_id, enabled=True)
+
+        assert exc_info.value.translation_domain == DOMAIN
+        assert exc_info.value.translation_key == "network_rule_update_failed"
+        assert exc_info.value.translation_placeholders == {
+            "rule_type": rule_type_placeholder,
+            "rule_name": expected_name,
+        }
+
+    @pytest.mark.asyncio
+    async def test_async_set_static_route_enabled_uses_internal_reference(
+        self, facade_coordinator: UnifiFacadeCoordinator
+    ) -> None:
+        """Static route toggle resolves site ONLY via internalReference."""
+        facade_coordinator._config_coordinator.data = {
+            "sites": {
+                "site_alpha": {
+                    "id": "site_alpha",
+                    "name": "Office",
+                    "internalReference": "alpha",
+                },
+                "site_beta": {
+                    "id": "site_beta",
+                    "name": "Office",
+                    "internalReference": "beta",
+                },
+            }
+        }
+        facade_coordinator._device_coordinator._legacy_site_names = {
+            "site_alpha": "beta",
+            "site_beta": "beta",
+        }
+        facade_coordinator.network_client.static_routes.update_static_route = (
+            AsyncMock()
+        )
+
+        await facade_coordinator.async_set_static_route_enabled(
+            "site_alpha", "sr1", enabled=False
+        )
+        facade_coordinator.network_client.static_routes.update_static_route.assert_called_once_with(
+            "alpha", "sr1", enabled=False
+        )
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("action_method", "endpoint_attr", "update_method"),
         [
@@ -7874,6 +8204,16 @@ class TestUnifiFacadeCoordinator:
                 "async_set_traffic_rule_enabled",
                 "traffic_rules",
                 "update_traffic_rule",
+            ),
+            (
+                "async_set_nat_rule_enabled",
+                "nat_rules",
+                "update_nat_rule",
+            ),
+            (
+                "async_set_static_route_enabled",
+                "static_routes",
+                "update_static_route",
             ),
         ],
     )
@@ -7963,6 +8303,16 @@ class TestUnifiFacadeCoordinator:
                 "async_set_traffic_rule_enabled",
                 "traffic_rules",
                 "update_traffic_rule",
+            ),
+            (
+                "async_set_nat_rule_enabled",
+                "nat_rules",
+                "update_nat_rule",
+            ),
+            (
+                "async_set_static_route_enabled",
+                "static_routes",
+                "update_static_route",
             ),
         ],
     )

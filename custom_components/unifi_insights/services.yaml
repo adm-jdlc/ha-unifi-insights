@@ -559,6 +559,34 @@ delete_voucher:
       selector:
         text:
 
+export_network_rules:
+  fields:
+    site_id:
+      required: false
+      selector:
+        text:
+    console_id:
+      required: false
+      selector:
+        text:
+    rule_types:
+      required: false
+      selector:
+        select:
+          multiple: true
+          options:
+            - firewall_rule
+            - policy_based_route
+            - port_forward
+            - traffic_rule
+            - nat_rule
+            - static_route
+    redact:
+      required: false
+      default: true
+      selector:
+        boolean:
+
 # UniFi Protect services
 trigger_alarm:
   name: Trigger Alarm

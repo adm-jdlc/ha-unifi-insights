@@ -25,7 +25,7 @@ Monitor and control your UniFi system from Home Assistant: UniFi Network, UniFi 
 
 ## Overview
 
-UniFi Insights is a custom integration that you install from HACS. It connects with an API key, not a user name and password. It mainly uses the official UniFi APIs that Ubiquiti publishes at [developer.ui.com](https://developer.ui.com/). For some UniFi Network features that the official API doesn't cover yet, such as Wi-Fi QR codes, VPN, route, port forward and traffic rule switches, and internet traffic history, it uses the console's classic Network endpoints with the same API key.
+UniFi Insights is a custom integration that you install from HACS. It connects with an API key, not a user name and password. It mainly uses the official UniFi APIs that Ubiquiti publishes at [developer.ui.com](https://developer.ui.com/). For some UniFi Network features that the official API doesn't cover yet, such as Wi-Fi QR codes, VPN, route, port forward, traffic rule, NAT rule and static route switches, and internet traffic history, it uses the console's classic Network endpoints with the same API key.
 
 - **One integration for your UniFi system.** One console entry covers that console's Network, Protect and InnerSpace applications. A cloud API key adds Mobility and Site Manager data. ISPs can add a Carrier Fabric entry.
 - **API key setup, local or remote.** Connect to a console on your network, or choose any console on your UniFi account through UniFi Cloud. You don't need a local user account.
@@ -113,7 +113,7 @@ Carrier Fabric entries have their own options. See [Carrier Fabric setup](#carri
 - **Storage:** used percentage, used space and total space for each filesystem a console reports (for example eMMC and backup storage on a UDM Pro SE), and a Storage Nearly Full alert. Per-drive SMART, temperature, RAID and Drive/UNAS data require supported API fields. Protect NVR aggregate diagnostics are conditional on reported storage fields; the current official `/v1/nvrs` response lacks them.
 - **Internet and WAN:** gateway and per-WAN connection status, WAN IP address, site-to-site VPN tunnel status, and internet download and upload totals for the last hour, day, week and month.
 - **Clients:** client counts per site, device and Wi-Fi network; optional presence tracking; allow/block switches and reconnect buttons, and Wake-on-LAN buttons for wired clients.
-- **Controls:** switches for Wi-Fi networks, firewall policies, policy-based routes, VPN clients, port forwards and traffic rules; device restart buttons; QR code images to join each Wi-Fi network.
+- **Controls:** switches for Wi-Fi networks, firewall policies, policy-based routes, VPN clients, port forwards, traffic rules, NAT rules and static routes; device restart buttons; QR code images to join each Wi-Fi network.
 - **Firmware:** update entities show the installed firmware and whether a newer version is available. They don't install firmware. Use the UniFi app for that.
 - **Guest access:** authorize guests and create or delete hotspot vouchers with actions.
 
@@ -148,6 +148,9 @@ Carrier Fabric entries have their own options. See [Carrier Fabric setup](#carri
 | _VPN client name_                                   | Switch         | Turn a VPN client (WireGuard, OpenVPN, Privado VPN) on or off                          |
 | Port forward _rule name_                            | Switch         | Turn a port forwarding rule on or off                                                  |
 | Traffic rule _rule description_                     | Switch         | Turn a traffic rule on or off                                                          |
+| NAT rule _rule description_                         | Switch         | Turn a custom NAT rule on or off (console-managed rules get no switch)                 |
+| Static route _route name_                           | Switch         | Turn a static route on or off, disabled by default                                     |
+| Network rule changes                                | Event          | A firewall policy, route, static route, port forward, traffic rule or NAT rule changed |
 | _Outlet name_                                       | Switch         | Turn a PDU outlet on or off                                                            |
 | _Outlet name_ Power Cycle                           | Switch         | Automatic modem power cycling for an outlet, disabled by default                       |
 | _Client name_ Allow                                 | Switch         | Block or allow a client (needs **Enable Client Control**)                              |
@@ -168,6 +171,49 @@ Carrier Fabric entries have their own options. See [Carrier Fabric setup](#carri
 | Latest Voucher Code                                 | Sensor         | Secret activation code of the most recent generated voucher                            |
 | Latest Voucher Expiration                           | Sensor         | Expiration timestamp of the most recent generated voucher                              |
 | Latest voucher QR code                              | Image          | Captive portal activation code QR code (not for joining Wi-Fi)                         |
+
+NAT rule and static route switches use the console's private API. They were tested on one UniFi gateway through the cloud connector; other consoles and Network versions may behave differently. If the console rejects a change, the switch reports an error and the rule is left as it was. A console can refuse requests for a few seconds while it applies a change (seen after static route changes). The rule switches of that site are then unavailable for about 15 seconds, until the integration reads the rules again.
+
+### Network rule change events
+
+Each site has one event entity, **Network rule changes**. It fires `added`, `modified` or `deleted` when a firewall policy, policy-based route, port forward, traffic rule, NAT rule or static route changes on the console. Changes made from Home Assistant switches count too.
+
+It does not fire for: rule reordering, system-defined firewall policies, console-managed NAT rules, VPN clients.
+
+Changes are found when the configuration is polled, every 5 minutes. A change that is made and undone between two polls is not seen.
+
+The first poll after Home Assistant starts or the integration reloads only records the current rules. Changes made while Home Assistant was stopped or reloading are not reported.
+
+If the console cannot be reached, nothing fires; changes made meanwhile are reported after the next successful poll.
+
+Deleting the last rule of a type on a site is reported one poll later (the integration waits for a second empty answer before it believes that every rule is gone).
+
+Known limits: a rule the integration cannot parse is reported as `deleted`; a rule the console takes over (it becomes system-defined) is reported as `deleted`, and `added` if it is handed back; at most 100 changes per site are kept from one poll.
+
+| Property         | Description                                                                                                        |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `event_type`     | `added`, `modified` or `deleted`                                                                                   |
+| `site_id`        | Site identifier                                                                                                    |
+| `rule_type`      | Family of rule (`firewall_rule`, `policy_based_route`, `port_forward`, `traffic_rule`, `nat_rule`, `static_route`) |
+| `rule_id`        | Unique ID of the rule                                                                                              |
+| `rule_name`      | Name or description of the rule                                                                                    |
+| `enabled`        | Whether the rule is enabled (`true`, `false`, or `null`)                                                           |
+| `changed_fields` | List of field names that changed                                                                                   |
+
+`rule_name` is the name or description typed on the console. No other field value (addresses, ports, domains) is included; `changed_fields` lists field names only.
+
+Do not use a bare state trigger: Home Assistant re-sends the last event when the entity returns from unavailable (a failed poll, a reload, a restart).
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: event.<site>_network_rule_changes
+    not_from: unavailable
+    not_to: unavailable
+mode: queued
+```
+
+Do not add `unknown` to `not_from`: the entity is `unknown` before its first event, so that would suppress the first event.
 
 #### Hotspot voucher management
 
@@ -217,15 +263,16 @@ UniFi has no Wake-on-LAN function, so the **Wake** buttons send the packet from 
 
 ### Network actions
 
-| Action                            | Description                                   |
-| --------------------------------- | --------------------------------------------- |
-| `unifi_insights.restart_device`   | Restart a network device                      |
-| `unifi_insights.authorize_guest`  | Authorize a guest client on a hotspot network |
-| `unifi_insights.reconnect_client` | Reconnect a wireless client to Wi-Fi          |
-| `unifi_insights.remove_clients`   | Remove short-lived unnamed clients from sites |
-| `unifi_insights.generate_voucher` | Create one or more hotspot vouchers           |
-| `unifi_insights.delete_voucher`   | Delete a hotspot voucher                      |
-| `unifi_insights.power_cycle_port` | Power cycle a switch port with PoE enabled    |
+| Action                                | Description                                   |
+| ------------------------------------- | --------------------------------------------- |
+| `unifi_insights.restart_device`       | Restart a network device                      |
+| `unifi_insights.authorize_guest`      | Authorize a guest client on a hotspot network |
+| `unifi_insights.reconnect_client`     | Reconnect a wireless client to Wi-Fi          |
+| `unifi_insights.remove_clients`       | Remove short-lived unnamed clients from sites |
+| `unifi_insights.generate_voucher`     | Create one or more hotspot vouchers           |
+| `unifi_insights.delete_voucher`       | Delete a hotspot voucher                      |
+| `unifi_insights.power_cycle_port`     | Power cycle a switch port with PoE enabled    |
+| `unifi_insights.export_network_rules` | Export the network rules of a console         |
 
 ```yaml
 # Restart a network device
@@ -260,6 +307,38 @@ data:
   device_id: "device-id"
   port_idx: 5
 ```
+
+```yaml
+# Export the network rules of a console (admin only; returns data, writes no file)
+action: unifi_insights.export_network_rules
+data:
+  redact: true
+response_variable: rules
+```
+
+The export is a snapshot of six rule types: firewall policies, policy-based routes, port forwards, traffic
+rules, NAT rules and static routes. Use it to compare, version and manually recover rules. It is not a complete
+console backup: the networks, firewall zones, traffic matching lists, groups and VPN definitions that rules
+refer to are not included, and there is no import action.
+
+- **Status:** the rules are read from the console when the action runs. Each rule type of each site has a
+  `status`. Only `ok` is complete. `failed` means the answer could not be read, was not JSON, was incomplete
+  or held a record that could not be parsed; no rules of that type are returned. `unsupported` means the
+  console refused the request (403, 404 or another client error), or the site has no verified classic name,
+  which the five rule types other than firewall policies need.
+- **Redacted (default, `redact: true`):** keeps each rule's ID, whether it is enabled, its type, action and
+  protocol, the port settings of port forwards and NAT rules, the WAN interface name of a port forward, the
+  order index, the logging flag, the kill switch and matching target of a policy-based route, the connection
+  state of a firewall policy, and the distance and gateway type of a static route. It replaces names,
+  descriptions, addresses, domains, the source and destination of firewall policies (their ports included),
+  network and client references and anything it does not recognise with `**REDACTED**`. Site IDs become
+  `site-1`, `site-2`, and so on: the label is the site's rank in sorted order among the exported sites, so it
+  can change when sites are added or when you export a single site. The site names and the console's title
+  and entry ID are removed.
+- **Unredacted (`redact: false`):** returns the fields the console sent for each rule, with the real site
+  IDs, names and addresses. Store it like a secret.
+- **Stable output:** `generated_at` changes on every call. For an unchanged console everything else is
+  identical, because sites and rules are listed in a fixed order.
 
 `authorize_guest` doesn't send a duration or limits yet, so the `duration_minutes` and limit fields are ignored and a warning is logged. The guest network's default access time and limits from UniFi apply.
 

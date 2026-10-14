@@ -49,6 +49,7 @@ from .exceptions import (
     UniFiNotFoundError,
     UniFiRateLimitError,
     UniFiResponseError,
+    UniFiRuleNotEditableError,
     UniFiTimeoutError,
     UniFiValidationError,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "UniFiNotFoundError",
     "UniFiRateLimitError",
     "UniFiResponseError",
+    "UniFiRuleNotEditableError",
     "UniFiTimeoutError",
     "UniFiValidationError",
 ]

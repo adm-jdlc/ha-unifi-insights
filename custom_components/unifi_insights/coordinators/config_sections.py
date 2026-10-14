@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from custom_components.unifi_insights.api import UniFiAuthenticationError
+from custom_components.unifi_insights.api.network.models import is_predefined_nat_rule
 from custom_components.unifi_insights.topology_contract import normalize_mac
 
 from .internet_activity import resolve_report_site_name
@@ -18,7 +19,14 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+SECTION_OUTCOME_OK: Final = "ok"
+SECTION_OUTCOME_UNSUPPORTED: Final = "unsupported"
+SECTION_OUTCOME_FAILED: Final = "failed"
+
 __all__ = [
+    "SECTION_OUTCOME_FAILED",
+    "SECTION_OUTCOME_OK",
+    "SECTION_OUTCOME_UNSUPPORTED",
     "async_fetch_site_firewall",
     "async_fetch_site_routes",
     "async_fetch_site_rule_section",
@@ -28,6 +36,8 @@ __all__ = [
     "async_fetch_site_wifi_and_links",
     "client_links",
     "enrich_wifi",
+    "is_predefined_firewall_rule",
+    "is_predefined_nat_rule",
     "map_legacy_site_names",
     "resolve_report_site_name",
     "rule_display_name",
@@ -256,12 +266,15 @@ async def async_fetch_site_firewall(
     coordinator: Any,
     site_id: str,
     failed_sections: set[tuple[str, str]],
+    *,
+    outcomes: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, Any]:
     """Fetch firewall rules for one site."""
     firewall_models = await coordinator._fetch_optional_section(
         "firewall_rules",
         site_id,
         partial(coordinator.network_client.firewall.list_rules, site_id),
+        outcomes=outcomes,
     )
     if firewall_models is None:
         failed_sections.add(("firewall_rules", site_id))
@@ -323,6 +336,18 @@ def rule_display_name(
     return rule_id
 
 
+def is_predefined_firewall_rule(rule_data: dict[str, Any]) -> bool:
+    """Return True when a firewall rule appears to be system-defined."""
+    metadata = rule_data.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("origin") == "SYSTEM_DEFINED":
+        return True
+    return bool(
+        rule_data.get("predefined")
+        or rule_data.get("isPredefined")
+        or rule_data.get("isSystem")
+    )
+
+
 async def async_fetch_site_rule_section(
     coordinator: Any,
     section: str,
@@ -330,12 +355,14 @@ async def async_fetch_site_rule_section(
     site_name: str | None,
     fetch: Callable[[str], Awaitable[list[Any]]],
     failed_sections: set[tuple[str, str]],
+    *,
+    outcomes: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, Any]:
-    """Fetch a network rule section (port forwards, traffic rules) for one site."""
+    """Fetch one rule section (port forwards, traffic rules, NAT, routes)."""
     if site_name is None:
         return {}
     models = await coordinator._fetch_optional_section(
-        section, site_id, partial(fetch, site_name)
+        section, site_id, partial(fetch, site_name), outcomes=outcomes
     )
     if models is None:
         failed_sections.add((section, site_id))
@@ -354,8 +381,15 @@ async def async_fetch_site_routes(
     model_to_dict: Callable[[Any], dict[str, Any]],
     site_id: str,
     legacy_name: str | None,
+    *,
+    outcomes: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, Any]:
-    """Fetch policy-based routes (traffic routes) for a site."""
+    """
+    Fetch policy-based routes (traffic routes) for a site.
+
+    ``outcomes`` records whether this fetch was authoritative. The returned
+    data is unchanged by it: a failed fetch still yields ``{}``.
+    """
     if not legacy_name:
         return {}
     try:
@@ -385,7 +419,11 @@ async def async_fetch_site_routes(
             site_id,
             err,
         )
+        if outcomes is not None:
+            outcomes[("policy_based_routes", site_id)] = SECTION_OUTCOME_FAILED
         return {}
+    if outcomes is not None:
+        outcomes[("policy_based_routes", site_id)] = SECTION_OUTCOME_OK
     return routes_dict
 
 

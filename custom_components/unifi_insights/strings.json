@@ -243,6 +243,28 @@
         }
       }
     },
+    "export_network_rules": {
+      "name": "Export network rules",
+      "description": "Return a snapshot of the firewall policies, policy-based routes, port forwards, traffic rules, NAT rules and static routes of one console as a versioned document, for comparison, versioning and manual recovery. It is not a complete console backup: the networks, zones, traffic matching lists, groups and VPN definitions that rules refer to are not included, and there is no import. The rules are read from the console when you run the action. Only a rule type with status ok is complete. Failed means the answer could not be read, was not JSON, was incomplete or held a record that could not be parsed. Unsupported means the console refused the request, or the site has no classic name for the five rule types other than firewall policies. Requires an admin user. The action only returns data; it does not write a file.",
+      "fields": {
+        "site_id": {
+          "name": "Site ID",
+          "description": "Export only this site. Leave empty to export every site of the console."
+        },
+        "console_id": {
+          "name": "Console",
+          "description": "Which console to export, given as the integration entry title or its entry ID. Only needed when more than one console is configured and you do not set a site ID."
+        },
+        "rule_types": {
+          "name": "Rule types",
+          "description": "The rule types to export. Leave empty to export all of them."
+        },
+        "redact": {
+          "name": "Redact sensitive values",
+          "description": "Keep each rule's ID, enabled state, type, action and protocol, the port settings of port forwards and NAT rules, the WAN interface name of a port forward, the order index, the logging flag, the kill switch and matching target of a policy-based route, the connection state of a firewall policy, and the distance and gateway type of a static route. Names, descriptions, addresses, domains, the source and destination of firewall policies, network and client references and anything unrecognised are replaced. Site IDs become site-1, site-2 and so on, as the rank among the exported sites, so a label can change when sites are added or when you export a single site. The console title and entry ID are removed. Turn this off to get the fields the console sent for each rule, including addresses and names. That export is sensitive."
+        }
+      }
+    },
     "remove_clients": {
       "name": "Remove Clients",
       "description": "Remove short-lived, unnamed historical clients from the UniFi Network. Forgets clients that have no name, hostname, or fixed IP and that were seen for 15 minutes or less. If a timestamp is missing, the client is not excluded by the age check. Processes the sites selected in the integration's settings, on consoles that have Network available. Clients with a timestamp that isn't a number are kept. Requires an admin user. Does not remove Home Assistant devices or entities."
@@ -747,6 +769,18 @@
       "traffic_rule_unnamed": {
         "name": "Traffic rule {rule_id}"
       },
+      "nat_rule": {
+        "name": "NAT rule {rule_name}"
+      },
+      "nat_rule_unnamed": {
+        "name": "NAT rule {rule_id}"
+      },
+      "static_route": {
+        "name": "Static route {rule_name}"
+      },
+      "static_route_unnamed": {
+        "name": "Static route {rule_id}"
+      },
       "wifi": {
         "name": "WiFi {wifi_name}"
       }
@@ -812,6 +846,18 @@
       },
       "sensor_event": {
         "name": "Door/Window"
+      },
+      "network_rule_changes": {
+        "name": "Network rule changes",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "added": "Added",
+              "modified": "Modified",
+              "deleted": "Deleted"
+            }
+          }
+        }
       }
     },
     "update": {
@@ -933,11 +979,38 @@
     "legacy_site_not_found": {
       "message": "No verified classic site name found for site {site_id}."
     },
+    "export_console_required": {
+      "message": "More than one UniFi console is configured. Set a console or a site ID."
+    },
+    "export_site_not_on_console": {
+      "message": "Site {site_id} is not on console {console}."
+    },
+    "export_no_sites": {
+      "message": "The console has no UniFi Network site to export."
+    },
+    "export_target_not_found": {
+      "message": "No configured UniFi console or site matches {target}."
+    },
+    "export_target_ambiguous": {
+      "message": "{target} matches more than one configured UniFi console. Use the entry ID of the console."
+    },
+    "export_network_rules_failed": {
+      "message": "Unable to read any network rules from the console."
+    },
     "wake_on_lan_unavailable": {
       "message": "Home Assistant's Wake on LAN service is not available. Check the log for Wake on LAN setup errors, then restart Home Assistant."
     },
     "wake_failed": {
       "message": "Unable to send the Wake-on-LAN packet to {client_name}: {error}"
+    },
+    "network_rule_not_found": {
+      "message": "Unable to update {rule_type} {rule_name}: it no longer exists on the console."
+    },
+    "network_rule_console_managed": {
+      "message": "Unable to update {rule_type} {rule_name}: it is managed by the console."
+    },
+    "network_rule_update_failed": {
+      "message": "Unable to update {rule_type} {rule_name}."
     }
   }
 }
