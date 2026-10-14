@@ -605,3 +605,70 @@ async def test_malformed_webhook_response_is_sanitized_and_isolated(
         assert data.network_client is mock_network_client
         assert "fixture-malformed-secret" not in caplog.text
         assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    "injection",
+    ["probe", "coordinator-init"],
+    ids=["probe-raises", "coordinator-init-raises"],
+)
+@pytest.mark.parametrize("close_fails", [False, True], ids=["close-ok", "close-fails"])
+async def test_unexpected_access_setup_error_closes_client_and_keeps_other_apps(
+    *,
+    hass,
+    mock_config_entry,
+    mock_network_client,
+    mock_protect_client,
+    mock_local_auth,
+    enable_custom_integrations,
+    caplog,
+    injection,
+    close_fails,
+):
+    """
+    Defensive cleanup: an injected UniFiError after the client is built closes it.
+
+    Injected, not observed. A real door API error cannot reach this except: the
+    probe classifies it as a status. The error is raised by a patched helper
+    that runs after UniFiAccessClient is constructed. A failing close is logged
+    at debug level and does not stop Network and Protect from loading.
+    """
+    injected_message = "Injected-unexpected-helper-failure"
+    _add_access_entry(hass, mock_config_entry)
+    client = _client(doors=DOORS, devices=DEVICES)
+    if close_fails:
+        client.close.side_effect = RuntimeError("Close failed")
+    injected = UniFiConnectionError(injected_message)
+    helper = (
+        patch(
+            "custom_components.unifi_insights.async_probe_access", side_effect=injected
+        )
+        if injection == "probe"
+        else patch(
+            "custom_components.unifi_insights.UnifiInsightsAccessCoordinator",
+            side_effect=injected,
+        )
+    )
+
+    with (
+        patch(
+            "custom_components.unifi_insights.UniFiAccessClient", return_value=client
+        ),
+        helper,
+        caplog.at_level(logging.DEBUG, logger="custom_components.unifi_insights"),
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    data = mock_config_entry.runtime_data
+    assert mock_config_entry.state is ConfigEntryState.LOADED
+    assert data.access_client is None
+    assert data.access_coordinator is None
+    assert data.network_client is mock_network_client
+    assert data.protect_coordinator is not None
+    client.close.assert_awaited_once()
+    assert "UniFi Access setup failed (UniFiConnectionError)" in caplog.text
+    assert injected_message not in caplog.text
+    assert "test-access-token" not in caplog.text
+    assert ("Error closing Access client (RuntimeError)" in caplog.text) is close_fails
+    assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
