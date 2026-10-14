@@ -40,6 +40,7 @@ from custom_components.unifi_insights.api.exceptions import (
     UniFiRateLimitError,
     UniFiResponseError,
     UniFiTimeoutError,
+    UniFiUnsupportedError,
     UniFiValidationError,
 )
 from custom_components.unifi_insights.api.network import (
@@ -1792,13 +1793,20 @@ async def test_link_stations_get_returns_model() -> None:
     client._get.assert_awaited_once_with(client.build_api_path("/link-stations/ls-1"))
 
 
-async def test_chime_play_posts_undocumented_play_route() -> None:
-    """chimes.play() posts to a route the v7.3.70 spec lacks; not live-verified."""
+@pytest.mark.parametrize("site_id", [None, "synthetic-site"])
+async def test_chime_play_is_unsupported_without_any_io(site_id: str | None) -> None:
+    """The compatibility stub fails before path construction or transport."""
     client = _protect_client()
     client._post = AsyncMock(return_value=None)
-
-    assert await client.chimes.play("chime-1") is True
-    client._post.assert_awaited_once_with(client.build_api_path("/chimes/chime-1/play"))
+    client._session = MagicMock()
+    with (
+        patch.object(client, "build_api_path") as build_path,
+        pytest.raises(UniFiUnsupportedError, match="does not support chime playback"),
+    ):
+        await client.chimes.play("chime-1", site_id=site_id)
+    build_path.assert_not_called()
+    client._post.assert_not_called()
+    assert client._session.mock_calls == []
 
 
 async def test_chimes_set_volume_sends_only_spec_fields() -> None:
@@ -1995,6 +2003,113 @@ async def test_chime_set_repeat_times_rejects_out_of_range(repeat_times: int) ->
         await client.chimes.set_repeat_times("chime-1", repeat_times)
 
     client._get.assert_not_awaited()
+    client._patch.assert_not_awaited()
+
+
+async def test_chime_set_ringtone_preserves_settings_and_strips_unknown_fields() -> (
+    None
+):
+    """Ringtone PATCH contains only the four required fields for each doorbell."""
+    client = _protect_client()
+    settings = [
+        {
+            "cameraId": "doorbell-a",
+            "volume": 0,
+            "repeatTimes": 2,
+            "ringtoneId": "tone-a",
+            "unsupported": "drop",
+        },
+        {
+            "cameraId": "doorbell-b",
+            "volume": 100,
+            "repeatTimes": 10,
+            "ringtoneId": "tone-b",
+        },
+    ]
+    original = copy.deepcopy(settings)
+    chime = {"id": "chime-1", "mac": "AA:BB:CC:DD:EE:FF", "ringSettings": settings}
+    client._get = AsyncMock(return_value=chime)
+    client._patch = AsyncMock(return_value=chime)
+
+    await client.chimes.set_ringtone("chime-1", "  tone-new  ")
+
+    path = client.build_api_path("/chimes/chime-1")
+    client._get.assert_awaited_once_with(path)
+    client._patch.assert_awaited_once_with(
+        path,
+        json_data={
+            "ringSettings": [
+                {
+                    "cameraId": "doorbell-a",
+                    "volume": 0,
+                    "repeatTimes": 2,
+                    "ringtoneId": "tone-new",
+                },
+                {
+                    "cameraId": "doorbell-b",
+                    "volume": 100,
+                    "repeatTimes": 10,
+                    "ringtoneId": "tone-new",
+                },
+            ]
+        },
+    )
+    assert settings == original
+
+
+@pytest.mark.parametrize("ringtone_id", ["", "  ", None, 123, False, b"tone"])
+async def test_chime_set_ringtone_rejects_invalid_id(ringtone_id: Any) -> None:
+    """Invalid IDs are rejected before even fetching the chime."""
+    client = _protect_client()
+    client._get = AsyncMock()
+    client._patch = AsyncMock()
+    with pytest.raises(ValueError, match="Ringtone ID must be a non-empty string"):
+        await client.chimes.set_ringtone("chime-1", ringtone_id)
+    client._get.assert_not_awaited()
+    client._patch.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        None,
+        [],
+        {},
+        "bad",
+        [None],
+        [{}],
+        [{"cameraId": "doorbell-a", "volume": 50}],
+        [{"repeatTimes": 2, "volume": 50}],
+        [{"cameraId": "doorbell-a", "repeatTimes": 2}],
+    ],
+)
+async def test_chime_set_ringtone_rejects_invalid_settings(settings: Any) -> None:
+    """Missing or incomplete per-doorbell data never produces a partial PATCH."""
+    client = _protect_client()
+    client._get = AsyncMock(
+        return_value={
+            "id": "chime-1",
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "ringSettings": settings,
+        }
+    )
+    client._patch = AsyncMock()
+    with pytest.raises(
+        ValueError, match=r"no paired doorbell|incomplete ring settings"
+    ):
+        await client.chimes.set_ringtone("chime-1", "tone-new")
+    client._patch.assert_not_awaited()
+
+
+async def test_chime_set_ringtone_get_failure_sends_no_patch() -> None:
+    """A failed read cannot invent preserved settings."""
+    client = _protect_client()
+    client._get = AsyncMock(
+        side_effect=UniFiResponseError("Unavailable", status_code=503)
+    )
+    client._patch = AsyncMock()
+    with pytest.raises(UniFiResponseError):
+        await client.chimes.set_ringtone("chime-1", "tone-new")
     client._patch.assert_not_awaited()
 
 

@@ -1,6 +1,6 @@
 """Tests for UniFi Protect select entities."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
@@ -8,8 +8,6 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.unifi_insights.api import ApiKeyAuth, ConnectionType
 from custom_components.unifi_insights.api.protect import UniFiProtectClient
 from custom_components.unifi_insights.const import (
-    CHIME_RINGTONE_DEFAULT,
-    CHIME_RINGTONE_MECHANICAL,
     DEVICE_TYPE_CAMERA,
     DEVICE_TYPE_CHIME,
     DEVICE_TYPE_VIEWER,
@@ -608,143 +606,211 @@ class TestUnifiProtectVideoModeSelect:
 class TestUnifiProtectChimeRingtoneSelect:
     """Tests for UnifiProtectChimeRingtoneSelect entity."""
 
-    def test_initialization(self, mock_coordinator):
-        """Test chime ringtone select initialization."""
-        mock_coordinator.data = {
-            "sites": {},
-            "devices": {},
-            "protect": {
-                "cameras": {},
-                "chimes": {
-                    "chime1": {
-                        "id": "chime1",
-                        "name": "Test Chime",
-                        "state": "CONNECTED",
-                        "ringSettings": [{"ringtoneId": "default"}],
-                    },
-                },
-                "lights": {},
-                "sensors": {},
-                "nvrs": {},
-                "viewers": {},
-                "liveviews": {},
+    @pytest.fixture
+    def ringtone_coordinator(self, mock_coordinator: MagicMock) -> MagicMock:
+        """Provide two console-local ringtone IDs and a facade action."""
+        mock_coordinator.data["protect"]["chimes"] = {
+            "chime1": {
+                "id": "chime1",
+                "name": "Test Chime",
+                "state": "CONNECTED",
+                "ringSettings": [{"ringtoneId": "tone-2"}],
+            },
+            "chime2": {
+                "id": "chime2",
+                "ringSettings": [
+                    {"ringtoneId": "tone-1"},
+                    {"ringtoneId": "tone-2"},
+                ],
             },
         }
+        mock_coordinator.async_set_chime_ringtone = AsyncMock()
+        return mock_coordinator
 
+    def test_initialization(self, ringtone_coordinator: MagicMock) -> None:
+        """Sorted distinct IDs retain existing entity and device identities."""
         entity = UnifiProtectChimeRingtoneSelect(
-            coordinator=mock_coordinator,
+            coordinator=ringtone_coordinator,
             chime_id="chime1",
         )
 
         assert entity._device_type == DEVICE_TYPE_CHIME
         assert entity._device_id == "chime1"
         assert entity._attr_translation_key == "ringtone"
-        assert entity._attr_current_option == "default"
-        assert CHIME_RINGTONE_DEFAULT in entity._attr_options
-        assert CHIME_RINGTONE_MECHANICAL in entity._attr_options
-
-    def test_initialization_no_ring_settings(self, mock_coordinator):
-        """Test chime ringtone select with no ring settings."""
-        mock_coordinator.data = {
-            "sites": {},
-            "devices": {},
-            "protect": {
-                "cameras": {},
-                "chimes": {
-                    "chime1": {
-                        "id": "chime1",
-                        "name": "Test Chime",
-                        "state": "CONNECTED",
-                        "ringSettings": [],
-                    },
-                },
-                "lights": {},
-                "sensors": {},
-                "nvrs": {},
-                "viewers": {},
-                "liveviews": {},
-            },
+        assert entity.unique_id == "unifi_insights_chime_chime1_ringtone"
+        assert entity.device_info is not None
+        assert entity.device_info["identifiers"] == {
+            ("unifi_insights", "protect_chime_chime1")
         }
+        assert entity._attr_current_option == "tone-2"
+        assert entity._attr_options == ["tone-1", "tone-2"]
+        assert entity.extra_state_attributes is not None
+        assert entity.extra_state_attributes["chime_ringtone_id"] == "tone-2"
 
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            None,
+            [],
+            {},
+            "invalid",
+            [None],
+            [{}],
+            [{"ringtoneId": None}],
+            [{"ringtoneId": ""}],
+            [{"ringtoneId": "  "}],
+            [{"ringtoneId": 1}],
+            [{"ringtoneId": "tone-1"}, {"ringtoneId": "tone-2"}],
+            [{"ringtoneId": "tone-1"}, None],
+        ],
+    )
+    def test_missing_or_invalid_current_settings(
+        self, ringtone_coordinator: MagicMock, settings: object
+    ) -> None:
+        """Missing or malformed settings have no fabricated current ringtone."""
+        ringtone_coordinator.data["protect"]["chimes"]["chime1"]["ringSettings"] = (
+            settings
+        )
         entity = UnifiProtectChimeRingtoneSelect(
-            coordinator=mock_coordinator,
+            coordinator=ringtone_coordinator,
             chime_id="chime1",
         )
+        assert entity._attr_current_option is None
+        assert entity.extra_state_attributes is not None
+        assert entity.extra_state_attributes["chime_ringtone_id"] is None
+        assert entity._attr_options == ["tone-1", "tone-2"]
 
-        assert entity._attr_current_option == CHIME_RINGTONE_DEFAULT
-
-    async def test_async_select_option_success(self, mock_coordinator):
-        """Test selecting ringtone option successfully."""
-        mock_coordinator.data = {
-            "sites": {},
-            "devices": {},
-            "protect": {
-                "cameras": {},
-                "chimes": {
-                    "chime1": {
-                        "id": "chime1",
-                        "name": "Test Chime",
-                        "state": "CONNECTED",
-                        "ringSettings": [],
-                    },
-                },
-                "lights": {},
-                "sensors": {},
-                "nvrs": {},
-                "viewers": {},
-                "liveviews": {},
-            },
+    def test_skip_malformed_chimes_and_entries(
+        self, ringtone_coordinator: MagicMock
+    ) -> None:
+        """Malformed neighbouring chimes do not crash or add invalid options."""
+        chimes = ringtone_coordinator.data["protect"]["chimes"]
+        chimes["bad-chime"] = None
+        chimes["bad-settings"] = {"ringSettings": {"ringtoneId": "foreign-tone"}}
+        chimes["bad-entries"] = {
+            "ringSettings": [None, "bad", {}, {"ringtoneId": False}]
         }
-        mock_coordinator.protect_client = MagicMock()
-        mock_coordinator.protect_client.set_chime_ringtone = AsyncMock()
-
         entity = UnifiProtectChimeRingtoneSelect(
-            coordinator=mock_coordinator,
+            coordinator=ringtone_coordinator,
             chime_id="chime1",
+        )
+        assert entity._attr_options == ["tone-1", "tone-2"]
+
+        chimes["chime1"] = None
+        entity._update_from_data()
+        assert entity._attr_current_option is None
+
+        ringtone_coordinator.data["protect"]["chimes"] = []
+        entity._update_from_data()
+        assert entity._attr_options == []
+        assert entity._attr_current_option is None
+
+    def test_options_follow_console_updates(
+        self, ringtone_coordinator: MagicMock
+    ) -> None:
+        """Options update from this coordinator; another console is not consulted."""
+        entity = UnifiProtectChimeRingtoneSelect(
+            coordinator=ringtone_coordinator, chime_id="chime1"
+        )
+        other = MagicMock()
+        other.data = {
+            "protect": {
+                "chimes": {
+                    "foreign": {"ringSettings": [{"ringtoneId": "foreign-tone"}]}
+                }
+            }
+        }
+        other_entity = UnifiProtectChimeRingtoneSelect(other, "foreign")
+        assert other_entity._attr_options == ["foreign-tone"]
+        assert "foreign-tone" not in entity._attr_options
+
+        ringtone_coordinator.data["protect"]["chimes"]["chime1"]["ringSettings"] = [
+            {"ringtoneId": "tone-new"},
+            {"ringtoneId": "tone-1"},
+        ]
+        ringtone_coordinator.data["protect"]["chimes"].pop("chime2")
+        entity._update_from_data()
+        assert entity._attr_options == ["tone-1", "tone-new"]
+        assert entity._attr_current_option is None
+
+    async def test_async_select_option_success(
+        self, ringtone_coordinator: MagicMock
+    ) -> None:
+        """A valid observed ID reaches the facade and updates state after success."""
+        entity = UnifiProtectChimeRingtoneSelect(
+            coordinator=ringtone_coordinator, chime_id="chime1"
+        )
+        with patch.object(entity, "async_write_ha_state") as write_state:
+            await entity.async_select_option("tone-1")
+        ringtone_coordinator.async_set_chime_ringtone.assert_awaited_once_with(
+            "chime1", "tone-1"
+        )
+        assert entity._attr_current_option == "tone-1"
+        write_state.assert_called_once()
+
+    async def test_async_select_option_legacy_fallback(
+        self, ringtone_coordinator: MagicMock
+    ) -> None:
+        """The fallback uses the real vendored ringtone endpoint."""
+        del ringtone_coordinator.async_set_chime_ringtone
+        ringtone_coordinator.protect_client.chimes.set_ringtone = AsyncMock()
+        entity = UnifiProtectChimeRingtoneSelect(
+            coordinator=ringtone_coordinator, chime_id="chime1"
+        )
+        with patch.object(entity, "async_write_ha_state"):
+            await entity.async_select_option("tone-1")
+        ringtone_coordinator.protect_client.chimes.set_ringtone.assert_awaited_once_with(
+            chime_id="chime1", ringtone_id="tone-1"
+        )
+        ringtone_coordinator.protect_client.set_chime_ringtone.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            None,
+            [],
+            {},
+            {"protect": None},
+            {"protect": []},
+            {"protect": {"chimes": None}},
+        ],
+    )
+    def test_malformed_cache_update_has_no_current_ringtone(
+        self, ringtone_coordinator: MagicMock, data: object
+    ) -> None:
+        """Malformed cache layers clear the value and options without raising."""
+        entity = UnifiProtectChimeRingtoneSelect(ringtone_coordinator, "chime1")
+        ringtone_coordinator.data = data
+        entity._update_from_data()
+        assert entity.current_option is None
+        assert entity.options == []
+
+    async def test_async_select_option_error(
+        self, ringtone_coordinator: MagicMock
+    ) -> None:
+        """A failed write leaves state unchanged and propagates the API error."""
+        ringtone_coordinator.async_set_chime_ringtone.side_effect = HomeAssistantError(
+            "Unable to set ringtone"
+        )
+        entity = UnifiProtectChimeRingtoneSelect(
+            coordinator=ringtone_coordinator, chime_id="chime1"
         )
         entity.async_write_ha_state = MagicMock()
-
-        await entity.async_select_option("mechanical")
-
-        mock_coordinator.protect_client.set_chime_ringtone.assert_called_once_with(
-            chime_id="chime1", ringtone_id="mechanical"
-        )
-
-    async def test_async_select_option_error(self, mock_coordinator):
-        """Test selecting ringtone option with error."""
-        mock_coordinator.data = {
-            "sites": {},
-            "devices": {},
-            "protect": {
-                "cameras": {},
-                "chimes": {
-                    "chime1": {
-                        "id": "chime1",
-                        "name": "Test Chime",
-                        "state": "CONNECTED",
-                        "ringSettings": [],
-                    },
-                },
-                "lights": {},
-                "sensors": {},
-                "nvrs": {},
-                "viewers": {},
-                "liveviews": {},
-            },
-        }
-        mock_coordinator.protect_client = MagicMock()
-        mock_coordinator.protect_client.set_chime_ringtone = AsyncMock(
-            side_effect=Exception("API Error")
-        )
-
-        entity = UnifiProtectChimeRingtoneSelect(
-            coordinator=mock_coordinator,
-            chime_id="chime1",
-        )
-        entity.async_write_ha_state = MagicMock()
-
         with pytest.raises(HomeAssistantError, match="Unable to set ringtone"):
-            await entity.async_select_option("mechanical")
+            await entity.async_select_option("tone-1")
+        assert entity._attr_current_option == "tone-2"
+        entity.async_write_ha_state.assert_not_called()
+
+    async def test_invalid_option_sends_nothing(
+        self, ringtone_coordinator: MagicMock
+    ) -> None:
+        """Invented or unobserved options are rejected before any action."""
+        entity = UnifiProtectChimeRingtoneSelect(
+            coordinator=ringtone_coordinator, chime_id="chime1"
+        )
+        with pytest.raises(HomeAssistantError, match="Ringtone ID not found"):
+            await entity.async_select_option("unobserved-tone")
+        ringtone_coordinator.async_set_chime_ringtone.assert_not_called()
 
 
 class TestUnifiProtectPTZPresetSelect:

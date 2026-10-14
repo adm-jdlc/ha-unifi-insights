@@ -37,6 +37,7 @@ from custom_components.unifi_insights.api import (
     UniFiGlobalAlarmManagerError,
     UniFiNotFoundError,
 )
+from custom_components.unifi_insights.api.exceptions import UniFiUnsupportedError
 from custom_components.unifi_insights.api.validation import sanitized_validation_fields
 from custom_components.unifi_insights.client_wake import (
     WAKE_ON_LAN_DOMAIN,
@@ -1101,12 +1102,21 @@ class UnifiFacadeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def async_play_chime(self, chime_id: str) -> None:
-        """Play a chime sound."""
+        """Report the official API's chime playback limitation."""
         protect_client = self._require_protect_client()
+
+        async def play() -> None:
+            try:
+                await protect_client.chimes.play(chime_id)
+            except UniFiUnsupportedError as err:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="chime_playback_unsupported",
+                ) from err
+
         await self._async_execute_api_action(
             f"Unable to play chime {chime_id}",
-            protect_client.chimes.play,
-            chime_id,
+            play,
         )
 
     async def async_start_ptz_patrol(self, camera_id: str, slot: int) -> None:
@@ -1153,10 +1163,17 @@ class UnifiFacadeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         protect_client = self._require_protect_client()
         await self._async_execute_api_action(
             f"Unable to set ringtone for chime {chime_id}",
-            protect_client.chimes.update,
+            protect_client.chimes.set_ringtone,
             chime_id,
-            ringtone=ringtone_id,
+            ringtone_id,
         )
+        if self._protect_coordinator is not None:
+            try:
+                await self._protect_coordinator.async_request_refresh()
+            except Exception:
+                _LOGGER.exception(
+                    "Chime ringtone was updated, but the Protect refresh failed"
+                )
 
     async def async_move_ptz_to_preset(self, camera_id: str, preset: int) -> None:
         """Move a PTZ camera to a preset."""

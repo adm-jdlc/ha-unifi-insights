@@ -399,24 +399,12 @@ ATTR_CHIME_REPEAT_TIMES: Final = "chime_repeat_times"
 ATTR_CHIME_CAMERA_IDS: Final = "chime_camera_ids"
 ATTR_CHIME_RING_SETTINGS: Final = "chime_ring_settings"
 
-# Chime ringtone IDs
-CHIME_RINGTONE_DEFAULT: Final = "default"
-CHIME_RINGTONE_MECHANICAL: Final = "mechanical"
-CHIME_RINGTONE_DIGITAL: Final = "digital"
-CHIME_RINGTONE_CHRISTMAS: Final = "christmas"
-CHIME_RINGTONE_TRADITIONAL: Final = "traditional"
-CHIME_RINGTONE_CUSTOM_1: Final = "custom1"
-CHIME_RINGTONE_CUSTOM_2: Final = "custom2"
-
 # Chime services
 SERVICE_SET_CHIME_VOLUME: Final = "set_chime_volume"
 SERVICE_PLAY_CHIME_RINGTONE: Final = "play_chime_ringtone"
 SERVICE_SET_CHIME_RINGTONE: Final = "set_chime_ringtone"
 SERVICE_SET_CHIME_REPEAT_TIMES: Final = "set_chime_repeat_times"
 SERVICE_SET_CHIME_PAIRED_DOORBELLS: Final = "set_chime_paired_doorbells"
-
-# Chime API endpoints
-API_PATH_CHIME_PLAY: Final = "/proxy/protect/integration/v1/chimes/{id}/play"
 
 # Light modes
 LIGHT_MODE_ALWAYS: Final = "always"

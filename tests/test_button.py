@@ -409,6 +409,9 @@ class TestUnifiProtectChimePlayButton:
 
         assert button._device_id == "chime1"
         assert button._attr_translation_key == "play"
+        assert button.unique_id == "unifi_insights_chime_chime1_play"
+        assert button.device_info is not None
+        assert button.device_info["identifiers"] == {(DOMAIN, "protect_chime_chime1")}
 
     async def test_chime_button_attributes(self, hass: HomeAssistant, mock_coordinator):
         """Test chime button attributes."""
@@ -418,6 +421,7 @@ class TestUnifiProtectChimePlayButton:
         )
 
         attrs = button.extra_state_attributes
+        assert attrs is not None
         assert attrs["chime_id"] == "chime1"
         assert attrs["chime_name"] == "Front Door Chime"
         assert attrs["chime_ringtone_id"] == "mechanical"
@@ -425,33 +429,43 @@ class TestUnifiProtectChimePlayButton:
     async def test_chime_button_press_uses_facade(
         self, hass: HomeAssistant, mock_coordinator
     ):
-        """The facade coroutine receives exactly the chime id."""
-        mock_coordinator.async_play_chime = AsyncMock()
+        """The facade receives only the ID and its translated error survives."""
+        error = HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="chime_playback_unsupported",
+        )
+        mock_coordinator.async_play_chime = AsyncMock(side_effect=error)
         button = UnifiProtectChimePlayButton(
             coordinator=mock_coordinator,
             chime_id="chime1",
         )
 
-        await button.async_press()
+        with pytest.raises(HomeAssistantError) as raised:
+            await button.async_press()
 
+        assert raised.value is error
         mock_coordinator.async_play_chime.assert_awaited_once_with("chime1")
+        mock_coordinator.protect_client.chimes.play.assert_not_called()
 
     async def test_chime_button_press(self, hass: HomeAssistant, mock_coordinator):
-        """Test chime play button press."""
+        """The fallback raises the translated error without calling the client."""
         button = UnifiProtectChimePlayButton(
             coordinator=mock_coordinator,
             chime_id="chime1",
         )
 
-        await button.async_press()
-
-        mock_coordinator.protect_client.chimes.play.assert_awaited_once_with("chime1")
+        with pytest.raises(HomeAssistantError) as raised:
+            await button.async_press()
+        assert raised.value.translation_key == "chime_playback_unsupported"
+        assert raised.value.translation_domain == DOMAIN
+        mock_coordinator.protect_client.chimes.play.assert_not_called()
+        mock_coordinator.protect_client._post.assert_not_called()
 
     async def test_chime_button_press_exception(
         self, hass: HomeAssistant, mock_coordinator
     ):
         """Test chime button handles exception."""
-        mock_coordinator.protect_client.chimes.play = AsyncMock(
+        mock_coordinator.async_play_chime = AsyncMock(
             side_effect=Exception("API Error")
         )
 
@@ -464,6 +478,37 @@ class TestUnifiProtectChimePlayButton:
             HomeAssistantError, match="Unable to play ringtone on chime"
         ):
             await button.async_press()
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            None,
+            [],
+            {"protect": None},
+            {"protect": []},
+            {"protect": {"chimes": []}},
+            {"protect": {"chimes": {"chime1": None}}},
+            {
+                "protect": {
+                    "chimes": {
+                        "chime1": {
+                            "ringSettings": [
+                                {"ringtoneId": "tone-a"},
+                                {"ringtoneId": "tone-b"},
+                            ]
+                        }
+                    }
+                }
+            },
+        ],
+    )
+    def test_chime_button_safe_current_id(self, mock_coordinator, data):
+        """Missing, malformed or mixed cache data never invents a ringtone."""
+        button = UnifiProtectChimePlayButton(mock_coordinator, "chime1")
+        mock_coordinator.data = data
+        button._update_attributes()
+        assert button.extra_state_attributes is not None
+        assert button.extra_state_attributes["chime_ringtone_id"] is None
 
 
 class TestUnifiProtectPTZButtons:
@@ -974,28 +1019,29 @@ class TestChimePlayButtonEdgeCases:
     async def test_chime_button_empty_ring_settings(
         self, hass: HomeAssistant, mock_coordinator
     ):
-        """Test chime button with empty ring settings defaults to 'default'."""
+        """Empty ring settings have no fabricated current ringtone."""
         button = UnifiProtectChimePlayButton(
             coordinator=mock_coordinator,
             chime_id="chime1",
         )
 
         attrs = button.extra_state_attributes
-        # When ring settings are empty, defaults to "default"
-        assert attrs["chime_ringtone_id"] == "default"
+        assert attrs is not None
+        assert attrs["chime_ringtone_id"] is None
 
     async def test_chime_button_press_with_empty_ring_settings(
         self, hass: HomeAssistant, mock_coordinator
     ):
-        """Chime press still plays when the chime has no ring settings."""
+        """An unpaired chime also fails without attempting playback."""
         button = UnifiProtectChimePlayButton(
             coordinator=mock_coordinator,
             chime_id="chime1",
         )
 
-        await button.async_press()
-
-        mock_coordinator.protect_client.chimes.play.assert_awaited_once_with("chime1")
+        with pytest.raises(HomeAssistantError) as raised:
+            await button.async_press()
+        assert raised.value.translation_key == "chime_playback_unsupported"
+        mock_coordinator.protect_client.chimes.play.assert_not_called()
 
 
 class TestAsyncSetupEntryWithClients:

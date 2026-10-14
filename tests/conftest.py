@@ -10,6 +10,7 @@ from homeassistant.const import CONF_API_KEY, CONF_HOST, CONF_VERIFY_SSL
 from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.unifi_insights.api.exceptions import UniFiUnsupportedError
 from custom_components.unifi_insights.api.innerspace import InnerSpaceProject
 from custom_components.unifi_insights.const import (
     CONF_CONNECTION_TYPE,
@@ -137,7 +138,9 @@ def _create_mock_protect_client() -> MagicMock:
     # Setup chimes namespace
     client.chimes = MagicMock()
     client.chimes.get_all = AsyncMock(return_value=[])
-    client.chimes.play = AsyncMock(return_value=True)
+    client.chimes.play = AsyncMock(
+        side_effect=UniFiUnsupportedError("Synthetic unsupported playback")
+    )
     client.chimes.set_volume = AsyncMock(return_value=True)
     client.chimes.set_ringtone = AsyncMock(return_value=True)
     client.chimes.set_repeat = AsyncMock(return_value=True)
@@ -169,7 +172,6 @@ def _create_mock_protect_client() -> MagicMock:
     client.ptz_start_patrol = AsyncMock(return_value=True)
     client.ptz_stop_patrol = AsyncMock(return_value=True)
     client.set_chime_volume = AsyncMock(return_value=True)
-    client.play_chime = AsyncMock(return_value=True)
     client.set_chime_ringtone = AsyncMock(return_value=True)
     client.set_chime_repeat = AsyncMock(return_value=True)
     client.trigger_alarm = AsyncMock(return_value=True)

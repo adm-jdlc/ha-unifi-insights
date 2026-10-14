@@ -20,13 +20,6 @@ from .const import (
     ATTR_VIDEO_MODE,
     ATTR_VIEWER_ID,
     ATTR_VIEWER_NAME,
-    CHIME_RINGTONE_CHRISTMAS,
-    CHIME_RINGTONE_CUSTOM_1,
-    CHIME_RINGTONE_CUSTOM_2,
-    CHIME_RINGTONE_DEFAULT,
-    CHIME_RINGTONE_DIGITAL,
-    CHIME_RINGTONE_MECHANICAL,
-    CHIME_RINGTONE_TRADITIONAL,
     DEVICE_TYPE_CAMERA,
     DEVICE_TYPE_CHIME,
     DEVICE_TYPE_VIEWER,
@@ -38,6 +31,7 @@ from .const import (
     VIDEO_MODE_SLOW_SHUTTER,
     VIDEO_MODE_SPORT,
 )
+from .data_transforms import current_chime_ringtone_id
 from .entity import (
     UnifiProtectEntity,
     async_call_coordinator_action,
@@ -309,15 +303,6 @@ class UnifiProtectChimeRingtoneSelect(UnifiProtectEntity, SelectEntity):
 
     _attr_has_entity_name = True
     _attr_translation_key = "ringtone"
-    _attr_options: ClassVar[list[str]] = [  # type: ignore[misc]
-        CHIME_RINGTONE_DEFAULT,
-        CHIME_RINGTONE_MECHANICAL,
-        CHIME_RINGTONE_DIGITAL,
-        CHIME_RINGTONE_CHRISTMAS,
-        CHIME_RINGTONE_TRADITIONAL,
-        CHIME_RINGTONE_CUSTOM_1,
-        CHIME_RINGTONE_CUSTOM_2,
-    ]
     _attr_icon = "mdi:bell-ring"
 
     def __init__(
@@ -336,15 +321,32 @@ class UnifiProtectChimeRingtoneSelect(UnifiProtectEntity, SelectEntity):
 
     def _update_from_data(self) -> None:
         """Update entity from data."""
-        chime_data = self.coordinator.data["protect"]["chimes"].get(self._device_id, {})
+        data = self.coordinator.data
+        protect = data.get("protect") if isinstance(data, dict) else None
+        chimes = protect.get("chimes") if isinstance(protect, dict) else None
+        if not isinstance(chimes, dict):
+            chimes = {}
+        chime_data = chimes.get(self._device_id, {})
+        if not isinstance(chime_data, dict):
+            chime_data = {}
 
-        # Get ring settings - use the first camera's settings or default
-        ring_settings = chime_data.get("ringSettings", [])
-        ringtone_id = CHIME_RINGTONE_DEFAULT  # Default ringtone
+        # The API has no ringtone catalogue; offer only IDs observed on this console.
+        ringtone_ids: set[str] = set()
+        for chime in chimes.values():
+            if not isinstance(chime, dict):
+                continue
+            settings = chime.get("ringSettings")
+            if not isinstance(settings, list):
+                continue
+            for setting in settings:
+                if not isinstance(setting, dict):
+                    continue
+                value = setting.get("ringtoneId")
+                if isinstance(value, str) and value.strip():
+                    ringtone_ids.add(value)
+        self._attr_options = sorted(ringtone_ids)
 
-        if ring_settings:
-            # Use the first camera's settings
-            ringtone_id = ring_settings[0].get("ringtoneId", CHIME_RINGTONE_DEFAULT)
+        ringtone_id = current_chime_ringtone_id(chime_data)
 
         # Set current option
         self._attr_current_option = ringtone_id
@@ -358,6 +360,9 @@ class UnifiProtectChimeRingtoneSelect(UnifiProtectEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
+        if option not in self._attr_options:
+            msg = f"Ringtone ID not found: {option}"
+            raise HomeAssistantError(msg)
         _LOGGER.debug("Setting ringtone to %s for chime %s", option, self._device_id)
 
         await async_call_coordinator_action(
@@ -366,9 +371,11 @@ class UnifiProtectChimeRingtoneSelect(UnifiProtectEntity, SelectEntity):
             f"Unable to set ringtone for chime {self._device_id}",
             self._device_id,
             option,
-            fallback_factory=lambda: self.coordinator.protect_client.set_chime_ringtone(  # type: ignore[union-attr]
-                chime_id=self._device_id,
-                ringtone_id=option,
+            fallback_factory=lambda: (
+                self.coordinator.protect_client.chimes.set_ringtone(  # type: ignore[union-attr]
+                    chime_id=self._device_id,
+                    ringtone_id=option,
+                )
             ),
         )
         self._attr_current_option = option

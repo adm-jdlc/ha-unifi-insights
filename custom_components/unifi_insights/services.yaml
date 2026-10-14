@@ -286,7 +286,9 @@ set_chime_volume:
 
 play_chime_ringtone:
   name: Play Chime Ringtone
-  description: Play a ringtone on a UniFi Protect chime.
+  description: >-
+    This action always raises a not supported error because the official
+    Protect API has no chime playback route.
   target:
     entity:
       integration: unifi_insights
@@ -301,19 +303,12 @@ play_chime_ringtone:
     ringtone_id:
       name: Ringtone ID
       description: >-
-        Optional ringtone ID to play (uses current setting if not specified)
+        Kept only so existing automations stay valid. The action raises the
+        same not supported error with or without this field.
       required: false
-      example: "default"
+      example: "example-ringtone-id"
       selector:
-        select:
-          options:
-            - "default"
-            - "mechanical"
-            - "digital"
-            - "christmas"
-            - "traditional"
-            - "custom1"
-            - "custom2"
+        text:
 
 set_chime_ringtone:
   name: Set Chime Ringtone
@@ -331,19 +326,14 @@ set_chime_ringtone:
         text:
     ringtone_id:
       name: Ringtone ID
-      description: Ringtone to set
+      description: >-
+        Protect ringtone ID to set for every paired doorbell. Read IDs from
+        the Ringtone select or its chime_ringtone_id attribute. The select
+        lists only IDs already used by this console's chimes.
       required: true
-      example: "default"
+      example: "example-ringtone-id"
       selector:
-        select:
-          options:
-            - "default"
-            - "mechanical"
-            - "digital"
-            - "christmas"
-            - "traditional"
-            - "custom1"
-            - "custom2"
+        text:
     camera_id:
       name: Camera ID
       description: >-

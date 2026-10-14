@@ -29,7 +29,6 @@ from .const import (
     ATTR_CHIME_ID,
     ATTR_CHIME_NAME,
     ATTR_CHIME_RINGTONE_ID,
-    CHIME_RINGTONE_DEFAULT,
     CONF_CLIENT_CONTROL,
     DEFAULT_CLIENT_CONTROL,
     DEFAULT_VOUCHER_NAME,
@@ -40,6 +39,7 @@ from .const import (
 )
 from .coordinators import UnifiFacadeCoordinator
 from .coordinators.voucher_state import voucher_request_kwargs, voucher_site_ids
+from .data_transforms import current_chime_ringtone_id
 from .entity import (
     UnifiInsightsEntity,
     UnifiProtectEntity,
@@ -634,33 +634,34 @@ class UnifiProtectChimePlayButton(UnifiProtectEntity, ButtonEntity):
 
     def _update_attributes(self) -> None:
         """Update button attributes."""
-        chime_data = self.coordinator.data["protect"]["chimes"].get(self._device_id, {})
-
-        # Get current ringtone from ring settings
-        ring_settings = chime_data.get("ringSettings", [])
-        ringtone_id = CHIME_RINGTONE_DEFAULT
-
-        if ring_settings:
-            ringtone_id = ring_settings[0].get("ringtoneId", CHIME_RINGTONE_DEFAULT)
+        data = self.coordinator.data
+        protect = data.get("protect") if isinstance(data, dict) else None
+        chimes = protect.get("chimes") if isinstance(protect, dict) else None
+        chime_data = chimes.get(self._device_id) if isinstance(chimes, dict) else None
+        if not isinstance(chime_data, dict):
+            chime_data = {}
 
         self._attr_extra_state_attributes = {
             ATTR_CHIME_ID: self._device_id,
             ATTR_CHIME_NAME: chime_data.get("name"),
-            ATTR_CHIME_RINGTONE_ID: ringtone_id,
+            ATTR_CHIME_RINGTONE_ID: current_chime_ringtone_id(chime_data),
         }
 
     async def async_press(self) -> None:
-        """Play the chime ringtone."""
-        _LOGGER.debug("Playing chime %s", self._device_id)
+        """Report that the official API cannot play a chime."""
+
+        async def unsupported() -> None:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="chime_playback_unsupported",
+            )
 
         await async_call_coordinator_action(
             self.coordinator,
             "async_play_chime",
             f"Unable to play ringtone on chime {self._device_id}",
             self._device_id,
-            fallback_factory=lambda: self.coordinator.protect_client.chimes.play(  # type: ignore[union-attr]
-                self._device_id
-            ),
+            fallback_factory=unsupported,
         )
 
 
