@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
-from homeassistant.components.diagnostics import async_redact_data
+import pytest
+from homeassistant.components.diagnostics import REDACTED, async_redact_data
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.unifi_insights.api.access.models import (
@@ -30,7 +32,11 @@ from custom_components.unifi_insights.diagnostics import (
     ACCESS_TO_REDACT,
     TO_REDACT,
     _access_diagnostics,
+    async_get_config_entry_diagnostics,
 )
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
 TOKEN = "access-token-7c1e9a"  # noqa: S105
 SECRET = "whsec-diagnostic-5d2b"  # noqa: S105
@@ -163,4 +169,55 @@ def test_entry_export_hides_token_and_webhook_state() -> None:
     text = json.dumps(async_redact_data(entry.as_dict(), TO_REDACT))
     for value in (TOKEN, WEBHOOK_ID, ENDPOINT_ID, SECRET):
         assert value not in text
+    assert "access_webhook" in text
+
+
+def _runtime(access_coordinator: MagicMock | None) -> SimpleNamespace:
+    """Return an entry runtime whose only optional coordinator is Access."""
+    facade = SimpleNamespace(data={}, network_client=None, protect_client=None)
+    return SimpleNamespace(
+        coordinator=facade,
+        protect_coordinator=None,
+        innerspace_coordinator=None,
+        site_manager_coordinator=None,
+        mobility_coordinator=None,
+        access_coordinator=access_coordinator,
+    )
+
+
+@pytest.mark.parametrize("configured", [True, False])
+async def test_public_export_includes_access_only_when_configured(
+    hass: HomeAssistant, *, configured: bool
+) -> None:
+    """The whole download carries Access state, redacted, only when Access runs."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Main",
+        data={
+            CONF_ACCESS_TOKEN: TOKEN,
+            CONF_ACCESS_WEBHOOK_ID: WEBHOOK_ID,
+            CONF_ACCESS_WEBHOOK_ENDPOINT_ID: ENDPOINT_ID,
+            CONF_ACCESS_WEBHOOK_SECRET: SECRET,
+        },
+        options={"access_webhook": True},
+    )
+    entry.add_to_hass(hass)
+    entry.runtime_data = _runtime(_coordinator() if configured else None)
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert ("access" in diagnostics) is configured
+    assert diagnostics["entry"]["title"] == "Main"
+    assert diagnostics["entry"]["data"][CONF_ACCESS_TOKEN] == REDACTED
+    if not configured:
+        return
+    access = diagnostics["access"]
+    assert access["auth_failed"] is False
+    assert access["webhook_active"] is True
+    assert access["features"] == {"doors": True, "devices": True, "emergency": True}
+    text = json.dumps(diagnostics, default=str)
+    for value in (TOKEN, WEBHOOK_ID, ENDPOINT_ID, SECRET, "door-diagnostic-1", MAC_ID):
+        assert value not in text
+    assert "Main Door" in text
+    assert "Reader Lobby" in text
     assert "access_webhook" in text
