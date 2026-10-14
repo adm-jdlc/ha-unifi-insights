@@ -187,6 +187,8 @@ class UnifiInsightsAccessCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._emergency_lock = asyncio.Lock()
         self._ws_task: asyncio.Task[None] | None = None
         self._debounce_cancel: Callable[[], None] | None = None
+        self._refresh_tasks: set[asyncio.Task[None]] = set()
+        self._read_tasks: set[asyncio.Task[dict[str, Any]]] = set()
         self.data = self._empty_snapshot()
 
     @staticmethod
@@ -199,7 +201,7 @@ class UnifiInsightsAccessCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.auth_failed:
             return self._empty_snapshot()
         try:
-            return await self._async_fetch()
+            return await self._async_read()
         except UniFiAuthenticationError as err:
             await self._async_expire(err.status_code)
             return self._empty_snapshot()
@@ -211,6 +213,22 @@ class UnifiInsightsAccessCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ) as err:
             msg = f"Error fetching UniFi Access data ({type(err).__name__})"
             raise UpdateFailed(msg) from err
+
+    async def _async_read(self) -> dict[str, Any]:
+        """
+        Run one coordinator snapshot read as an entry task that stop can cancel.
+
+        Poll, debounced and command-readback refreshes read through here. Direct
+        client calls made by commands are not tracked.
+        """
+        read = self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_fetch(),
+            name=f"{DOMAIN}_access_read",
+        )
+        self._read_tasks.add(read)
+        read.add_done_callback(self._read_tasks.discard)
+        return await read
 
     async def _async_fetch(self) -> dict[str, Any]:
         """Read each feature; a 403 or 404 on one feature only disables that feature."""
@@ -560,16 +578,46 @@ class UnifiInsightsAccessCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def async_stop_websocket(self) -> None:
-        """Stop the socket and its debounce timer. Safe to call more than once."""
+        """
+        Stop the socket, the debounce timer, and every tracked read and refresh.
+
+        The socket stops first, so no frame can arm a new timer after the timer
+        is cleared. Tracked means coordinator snapshot reads and debounced
+        refreshes. Returning means no other tracked read or refresh is still
+        running; the calling task is excluded. Direct client
+        calls made by commands (emergency reads and writes, user and remote
+        writes) are not tracked, and a remote write already sent may still be in
+        flight. The calling task is never awaited: a refresh reaches here through
+        a 401. Safe to call more than once.
+        """
+        task = self._ws_task
+        self._ws_task = None
+        if task is not None:
+            task.cancel()
+            await asyncio.wait({task})
         if self._debounce_cancel is not None:
             self._debounce_cancel()
             self._debounce_cancel = None
-        task = self._ws_task
-        self._ws_task = None
-        if task is None:
-            return
-        task.cancel()
-        await asyncio.wait({task})
+        current = asyncio.current_task()
+        pending = {
+            pending_task
+            for pending_task in (*self._refresh_tasks, *self._read_tasks)
+            if pending_task is not current
+        }
+        for pending_task in pending:
+            pending_task.cancel()
+        if pending:
+            await asyncio.wait(pending)
+
+    async def async_shutdown(self) -> None:
+        """
+        Stop polling, then stop the socket and settle tracked reads and refreshes.
+
+        The base class sets the shutdown flag first, so a refresh that gets the
+        lock after the cancelled read releases it returns without reading.
+        """
+        await super().async_shutdown()
+        await self.async_stop_websocket()
 
     @callback
     def _handle_frame(self, frame: dict[str, Any]) -> None:
@@ -607,6 +655,12 @@ class UnifiInsightsAccessCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @callback
     def _async_debounced_fire(self, _now: Any) -> None:
-        """Run the debounced refresh."""
+        """Run the debounced refresh as a task that stop can cancel and await."""
         self._debounce_cancel = None
-        self.hass.async_create_task(self.async_refresh())
+        refresh = self.config_entry.async_create_background_task(
+            self.hass,
+            self.async_refresh(),
+            name=f"{DOMAIN}_access_debounced_refresh",
+        )
+        self._refresh_tasks.add(refresh)
+        refresh.add_done_callback(self._refresh_tasks.discard)

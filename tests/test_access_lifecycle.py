@@ -43,6 +43,10 @@ from custom_components.unifi_insights.const import (
     DOMAIN,
     SCAN_INTERVAL_ACCESS,
 )
+from custom_components.unifi_insights.coordinators.access import (
+    ACCESS_DEBOUNCE_SECONDS,
+    UnifiInsightsAccessCoordinator,
+)
 from custom_components.unifi_insights.helpers import SiteEntityIdentityError
 from tests.test_access_coordinator import DEVICES, DOORS, NAMESPACE, _client
 from tests.test_access_webhook import _sign, _unlock_event
@@ -460,9 +464,19 @@ async def test_access_resources_follow_the_entry_lifecycle(
     async def _run_socket(*_args, **_kwargs):
         await asyncio.Event().wait()
 
+    shutdowns: list[UnifiInsightsAccessCoordinator] = []
+    original_shutdown = UnifiInsightsAccessCoordinator.async_shutdown
+
+    async def _record_shutdown(self: UnifiInsightsAccessCoordinator) -> None:
+        shutdowns.append(self)
+        await original_shutdown(self)
+
     with (
         patch(
             "custom_components.unifi_insights.UniFiAccessClient", return_value=client
+        ),
+        patch.object(
+            UnifiInsightsAccessCoordinator, "async_shutdown", _record_shutdown
         ),
         patch(
             "custom_components.unifi_insights.access_webhook.webhook.async_generate_url",
@@ -486,6 +500,10 @@ async def test_access_resources_follow_the_entry_lifecycle(
             await hass.async_block_till_done()
             assert mock_config_entry.state is ConfigEntryState.SETUP_ERROR
             client.close.assert_awaited_once()
+            # The ordered teardown and HA's base on_unload registration both call
+            # async_shutdown, so a failed setup always reaches it with the flag set.
+            assert len(shutdowns) == 2
+            assert all(shutdown._shutdown_requested for shutdown in shutdowns)
         else:
             assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
             await hass.async_block_till_done()
@@ -801,3 +819,298 @@ async def test_identity_conflict_after_move_cleanup_reloads_and_restores_receive
         assert (await _deliver(http, "new-secret")).status == HTTPStatus.OK
         assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
         await hass.async_block_till_done()
+
+
+async def test_unload_settles_debounced_refresh_before_closing_the_client(
+    *,
+    hass,
+    mock_config_entry,
+    mock_network_client,
+    mock_protect_client,
+    mock_local_auth,
+    enable_custom_integrations,
+    caplog,
+):
+    """Real HA unload: a debounced refresh blocked on the console ends before close.
+
+    The status frame arrives through the socket's own frame callback, so the
+    refresh starts from the same path a console notification uses.
+    """
+    _add_access_entry(hass, mock_config_entry)
+    client = _client(doors=DOORS, devices=DEVICES)
+    frames = {}
+    started = asyncio.Queue()
+    cancelled = []
+    seen_at_close = []
+
+    async def _run_socket(on_frame, **_kwargs):
+        frames["on_frame"] = on_frame
+        await asyncio.Event().wait()
+
+    async def _blocked_read() -> None:
+        started.put_nowait(None)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    async def _record_close() -> None:
+        seen_at_close.append(list(cancelled))
+
+    with (
+        patch(
+            "custom_components.unifi_insights.UniFiAccessClient", return_value=client
+        ),
+        patch(
+            "custom_components.unifi_insights.coordinators.access."
+            "AccessNotificationSocket.run",
+            side_effect=_run_socket,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        coordinator = mock_config_entry.runtime_data.access_coordinator
+        snapshot = coordinator.data
+        client.doors.get_all.side_effect = _blocked_read
+        frames["on_frame"]({"event": "access.remote_view.change", "data": {}})
+        async_fire_time_changed(
+            hass,
+            dt_util.utcnow() + timedelta(seconds=ACCESS_DEBOUNCE_SECONDS + 1),
+        )
+        await started.get()
+        reads_before_unload = client.doors.get_all.await_count
+
+        client.close.side_effect = _record_close
+        assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert seen_at_close
+    assert all(seen == [True] for seen in seen_at_close)
+    assert client.doors.get_all.await_count == reads_before_unload
+    assert coordinator.data is snapshot
+    assert _unexpected_errors(caplog) == []
+
+
+def _block_doors_read(
+    client: MagicMock,
+) -> tuple[asyncio.Queue[None], list[bool]]:
+    """Make the doors read wait on the console until it is cancelled."""
+    started = asyncio.Queue()
+    cancelled = []
+
+    async def _blocked_read() -> None:
+        started.put_nowait(None)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    client.doors.get_all.side_effect = _blocked_read
+    return started, cancelled
+
+
+async def test_unload_settles_periodic_poll_before_closing_the_client(
+    *,
+    hass,
+    mock_config_entry,
+    mock_network_client,
+    mock_protect_client,
+    mock_local_auth,
+    enable_custom_integrations,
+    caplog,
+):
+    """Real HA poll timer: a periodic read blocked on the console ends before close."""
+    _add_access_entry(hass, mock_config_entry)
+    client = _client(doors=DOORS, devices=DEVICES)
+
+    async def _run_socket(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    seen_at_close = []
+
+    async def _record_close() -> None:
+        seen_at_close.append(list(cancelled))
+
+    with (
+        patch(
+            "custom_components.unifi_insights.UniFiAccessClient", return_value=client
+        ),
+        patch(
+            "custom_components.unifi_insights.coordinators.access."
+            "AccessNotificationSocket.run",
+            side_effect=_run_socket,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        coordinator = mock_config_entry.runtime_data.access_coordinator
+        snapshot = coordinator.data
+        started, cancelled = _block_doors_read(client)
+        async_fire_time_changed(
+            hass, dt_util.utcnow() + SCAN_INTERVAL_ACCESS + timedelta(seconds=1)
+        )
+        await started.get()
+        reads_before_unload = client.doors.get_all.await_count
+
+        client.close.side_effect = _record_close
+        assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert seen_at_close
+    assert all(seen == [True] for seen in seen_at_close)
+    assert client.doors.get_all.await_count == reads_before_unload
+    assert coordinator.data is snapshot
+    assert _unexpected_errors(caplog) == []
+
+
+async def test_queued_refresh_behind_blocked_poll_never_reads_after_unload(
+    *,
+    hass,
+    mock_config_entry,
+    mock_network_client,
+    mock_protect_client,
+    mock_local_auth,
+    enable_custom_integrations,
+    caplog,
+):
+    """A status refresh queued on HA's refresh lock does not read after unload."""
+    _add_access_entry(hass, mock_config_entry)
+    client = _client(doors=DOORS, devices=DEVICES)
+    frames = {}
+
+    async def _run_socket(on_frame, **_kwargs):
+        frames["on_frame"] = on_frame
+        await asyncio.Event().wait()
+
+    seen_at_close = []
+
+    async def _record_close() -> None:
+        seen_at_close.append(list(cancelled))
+
+    with (
+        patch(
+            "custom_components.unifi_insights.UniFiAccessClient", return_value=client
+        ),
+        patch(
+            "custom_components.unifi_insights.coordinators.access."
+            "AccessNotificationSocket.run",
+            side_effect=_run_socket,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        started, cancelled = _block_doors_read(client)
+        async_fire_time_changed(
+            hass, dt_util.utcnow() + SCAN_INTERVAL_ACCESS + timedelta(seconds=1)
+        )
+        await started.get()
+        frames["on_frame"]({"event": "access.remote_view.change", "data": {}})
+        async_fire_time_changed(
+            hass,
+            dt_util.utcnow() + timedelta(seconds=ACCESS_DEBOUNCE_SECONDS + 1),
+        )
+        await hass.async_block_till_done()
+        reads_before_unload = client.doors.get_all.await_count
+
+        client.close.side_effect = _record_close
+        assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert seen_at_close
+    assert all(seen == [True] for seen in seen_at_close)
+    assert client.doors.get_all.await_count == reads_before_unload
+    assert _unexpected_errors(caplog) == []
+
+
+async def test_failed_setup_settles_reads_before_closing_the_client(
+    *,
+    hass,
+    mock_config_entry,
+    mock_network_client,
+    mock_protect_client,
+    mock_local_auth,
+    enable_custom_integrations,
+):
+    """A failed forward with a read in flight settles the read before close.
+
+    Home Assistant runs the entry's on_unload callbacks as concurrent tasks, so
+    the client close must wait for the shutdown inside one ordered callback.
+    """
+    client = _client(doors=DOORS, devices=DEVICES)
+    _add_access_entry(hass, mock_config_entry)
+    coordinators: list[UnifiInsightsAccessCoordinator] = []
+    blocked: list[tuple[asyncio.Queue[None], list[bool]]] = []
+    reads_at_failure: list[int] = []
+    close_seen: list[tuple[bool, list[bool]]] = []
+
+    async def _run_socket(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    async def _fail_with_reads_in_flight(*_args, **_kwargs) -> None:
+        coordinator = mock_config_entry.runtime_data.access_coordinator
+        coordinators.append(coordinator)
+        blocked.append(_block_doors_read(client))
+        started, _ = blocked[0]
+        hass.async_create_task(coordinator.async_refresh())
+        await started.get()
+        hass.async_create_task(coordinator.async_refresh())
+        await asyncio.sleep(0)
+        reads_at_failure.append(client.doors.get_all.await_count)
+        msg = "Platform forwarding failed"
+        raise RuntimeError(msg)
+
+    async def _record_close() -> None:
+        _, cancelled = blocked[0]
+        close_seen.append((coordinators[0]._shutdown_requested, list(cancelled)))
+
+    with (
+        patch(
+            "custom_components.unifi_insights.UniFiAccessClient", return_value=client
+        ),
+        patch(
+            "custom_components.unifi_insights.coordinators.access."
+            "AccessNotificationSocket.run",
+            side_effect=_run_socket,
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            side_effect=_fail_with_reads_in_flight,
+        ),
+    ):
+        client.close.side_effect = _record_close
+        async with asyncio.timeout(5):
+            assert not await hass.config_entries.async_setup(mock_config_entry.entry_id)
+            await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert mock_config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert close_seen == [(True, [True])]
+    client.close.assert_awaited_once()
+    assert client.doors.get_all.await_count == reads_at_failure[0]
+
+
+# The camera platform logs this once when Pillow lacks libturbojpeg. It is
+# environment noise, not an Access failure, so it is the only ERROR allowed.
+_KNOWN_ENVIRONMENT_ERRORS = frozenset(
+    {
+        (
+            "homeassistant.components.camera.img_util",
+            (
+                "Error loading libturbojpeg; "
+                "Camera snapshot performance will be sub-optimal"
+            ),
+        )
+    }
+)
+
+
+def _unexpected_errors(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Return every ERROR record except the known camera libturbojpeg notice."""
+    return [
+        record
+        for record in caplog.records
+        if record.levelno >= logging.ERROR
+        and (record.name, record.getMessage()) not in _KNOWN_ENVIRONMENT_ERRORS
+    ]

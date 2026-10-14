@@ -357,8 +357,8 @@ async def test_emergency_403_is_not_a_transient_failure(hass: Any) -> None:
         await coordinator._async_update_data()
 
 
-async def test_unexpected_error_is_an_update_failure(hass: Any) -> None:
-    """An error the client did not classify becomes UpdateFailed, never raw."""
+async def test_unexpected_error_propagates_unwrapped(hass: Any) -> None:
+    """An unclassified error propagates unwrapped, not as UpdateFailed."""
     client = _client()
     client.doors.get_all = AsyncMock(side_effect=RuntimeError("unexpected"))
     coordinator = UnifiInsightsAccessCoordinator(hass, _entry(hass), client)
@@ -1050,6 +1050,108 @@ async def test_refresh_with_no_frames_leaves_debounce_clear(hass: Any) -> None:
     assert set(coordinator.data["doors"]) == {"door-gate", "door-plain", "door-unbound"}
 
 
+def _blocking_doors_read(client: MagicMock) -> tuple[asyncio.Queue[None], list[bool]]:
+    """Make the doors read wait until cancelled; report each entry and cancellation."""
+    started: asyncio.Queue[None] = asyncio.Queue()
+    cancelled: list[bool] = []
+
+    async def _blocked_read() -> None:
+        started.put_nowait(None)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    client.doors.get_all.side_effect = _blocked_read
+    return started, cancelled
+
+
+def _fire_debounce(hass: Any) -> None:
+    """Fire the debounce timer through HA's native timer, past its window."""
+    async_fire_time_changed(
+        hass,
+        dt_util.utcnow() + timedelta(seconds=ACCESS_DEBOUNCE_SECONDS + 1),
+    )
+
+
+async def test_stop_settles_debounced_refresh_blocked_in_the_endpoint(
+    hass: Any,
+) -> None:
+    """Stop cancels a debounced refresh waiting on the console and waits for it."""
+    client = _client(doors=DOORS)
+    coordinator = await _ready(hass, client)
+    started, cancelled = _blocking_doors_read(client)
+    snapshot = coordinator.data
+
+    coordinator._handle_frame({"event": "access.remote_view.change", "data": {}})
+    _fire_debounce(hass)
+    await started.get()
+
+    await coordinator.async_stop_websocket()
+    await coordinator.async_stop_websocket()
+
+    assert cancelled == [True]
+    assert coordinator.data is snapshot
+
+
+async def test_overlapping_debounced_refreshes_are_all_cancelled(hass: Any) -> None:
+    """A status burst longer than one debounce window leaves no refresh running.
+
+    Home Assistant serializes refreshes on one lock, so the second refresh waits
+    behind the blocked first. Stop must cancel both, not only the newest, and
+    the queued one must never reach the endpoint after stop.
+    """
+    client = _client(doors=DOORS)
+    coordinator = await _ready(hass, client)
+    started, cancelled = _blocking_doors_read(client)
+
+    coordinator._handle_frame({"event": "access.remote_view.change", "data": {}})
+    _fire_debounce(hass)
+    await started.get()
+    coordinator._handle_frame({"event": "access.remote_view.change", "data": {}})
+    _fire_debounce(hass)
+
+    await coordinator.async_stop_websocket()
+
+    assert cancelled == [True]
+    assert started.empty()
+
+
+async def test_unauthorized_debounced_refresh_expires_without_awaiting_itself(
+    hass: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A 401 that arrives after the refresh yields expires Access without self-awaiting.
+
+    The reply is gated, so the refresh is registered as a task before the 401.
+    """
+    client = _client(doors=DOORS)
+    coordinator = await _ready(hass, client)
+    started: asyncio.Queue[None] = asyncio.Queue()
+    release = asyncio.Event()
+
+    rejected = UniFiAuthenticationError("Rejected", status_code=401)
+
+    async def _rejected_read() -> None:
+        started.put_nowait(None)
+        await release.wait()
+        raise rejected
+
+    client.doors.get_all.side_effect = _rejected_read
+    coordinator._handle_frame({"event": "access.remote_view.change", "data": {}})
+    _fire_debounce(hass)
+    await started.get()
+
+    with caplog.at_level(logging.WARNING):
+        release.set()
+        async with asyncio.timeout(5):
+            await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert coordinator.auth_failed
+    assert coordinator.update_interval is None
+    assert caplog.text.count("token was rejected") == 1
+
+
 async def test_refresh_handles_client_models_as_attributes(hass: Any) -> None:
     """Client models are read through attributes, including undocumented fields."""
     client = _client(devices=[_device("gate-hub", type="UGT", location_id="door-gate")])
@@ -1325,3 +1427,94 @@ async def test_empty_device_list_still_locks_ordinary_doors(hass: Any) -> None:
         {"door-gate", "door-plain", "door-unbound"}
     )
     assert coordinator.gate_door_ids == frozenset()
+
+
+async def test_shutdown_stops_polling_and_refuses_later_refreshes(hass: Any) -> None:
+    """Public shutdown is idempotent and a refresh after it never reads the console."""
+    client = _client(doors=DOORS)
+    coordinator = await _ready(hass, client)
+    reads = client.doors.get_all.await_count
+
+    await coordinator.async_shutdown()
+    await coordinator.async_shutdown()
+    await coordinator.async_refresh()
+
+    assert client.doors.get_all.await_count == reads
+
+
+async def test_shutdown_cancels_an_in_flight_refresh_from_any_caller(hass: Any) -> None:
+    """A refresh outside the debounce, such as a command readback, is cancelled too."""
+    client = _client(doors=DOORS)
+    coordinator = await _ready(hass, client)
+    started, cancelled = _blocking_doors_read(client)
+    reads = client.doors.get_all.await_count
+
+    refresh = hass.async_create_task(coordinator.async_refresh())
+    await started.get()
+    async with asyncio.timeout(5):
+        await coordinator.async_shutdown()
+        await refresh
+
+    assert cancelled == [True]
+    assert client.doors.get_all.await_count == reads + 1
+
+
+async def test_expiry_cancels_a_queued_refresh_without_deadlock(
+    hass: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A 401 on the active refresh cancels a refresh queued behind it, once."""
+    client = _client(doors=DOORS)
+    coordinator = await _ready(hass, client)
+    started: asyncio.Queue[None] = asyncio.Queue()
+    release = asyncio.Event()
+    reads = client.doors.get_all.await_count
+
+    rejected = UniFiAuthenticationError("Rejected", status_code=401)
+
+    async def _rejected_read() -> None:
+        started.put_nowait(None)
+        await release.wait()
+        raise rejected
+
+    client.doors.get_all.side_effect = _rejected_read
+    coordinator._handle_frame({"event": "access.remote_view.change", "data": {}})
+    _fire_debounce(hass)
+    await started.get()
+    coordinator._handle_frame({"event": "access.remote_view.change", "data": {}})
+    _fire_debounce(hass)
+
+    with caplog.at_level(logging.WARNING):
+        release.set()
+        async with asyncio.timeout(5):
+            await hass.async_block_till_done(wait_background_tasks=True)
+
+    warnings = [r for r in caplog.records if "token was rejected" in r.getMessage()]
+    assert coordinator.auth_failed
+    assert client.doors.get_all.await_count == reads + 1
+    assert len(warnings) == 1
+
+
+async def test_untracked_refresh_queued_behind_active_read_never_reads_after_shutdown(
+    hass: Any,
+) -> None:
+    """Shutdown cancels the active read; a queued refresh then starts no HTTP call.
+
+    The queued refresh is an ordinary coordinator refresh, not a debounced one, so
+    only the shutdown flag stops it. It waits on the lock behind the blocked read.
+    """
+    client = _client(doors=DOORS)
+    coordinator = await _ready(hass, client)
+    started, cancelled = _blocking_doors_read(client)
+    reads = client.doors.get_all.await_count
+
+    active = hass.async_create_task(coordinator.async_refresh())
+    await started.get()
+    queued = hass.async_create_task(coordinator.async_refresh())
+    await asyncio.sleep(0)
+    async with asyncio.timeout(5):
+        await coordinator.async_shutdown()
+        await active
+        await queued
+
+    assert cancelled == [True]
+    assert client.doors.get_all.await_count == reads + 1

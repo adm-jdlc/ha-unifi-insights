@@ -798,9 +798,15 @@ async def _async_setup_access(
                 "UniFi Access is unreachable at startup; its door entities appear "
                 "when the console responds"
             )
-        # Cleanup also runs if platform forwarding subsequently fails.
-        entry.async_on_unload(lambda: _async_close_access(client))
-        entry.async_on_unload(coordinator.async_stop_websocket)
+
+        # Cleanup also runs if platform forwarding subsequently fails. HA runs
+        # on_unload callbacks as concurrent tasks, so the close must follow the
+        # shutdown inside one coroutine rather than as a separate callback.
+        async def _async_teardown_access() -> None:
+            await coordinator.async_shutdown()
+            await _async_close_access(client)
+
+        entry.async_on_unload(_async_teardown_access)
     except UniFiError as err:
         _LOGGER.warning(
             "UniFi Access setup failed (%s); other applications remain active",
@@ -844,7 +850,7 @@ async def async_unload_entry(
         data = entry.runtime_data
         _LOGGER.debug("Closing API clients")
         if data.access_coordinator:
-            await data.access_coordinator.async_stop_websocket()
+            await data.access_coordinator.async_shutdown()
         await async_unload_access_webhook(hass, entry)
         if data.access_client:
             await _async_close_access(data.access_client)

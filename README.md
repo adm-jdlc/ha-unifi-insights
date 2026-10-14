@@ -535,13 +535,14 @@ Deactivation is reversible and does not delete NFC credentials.
 
 ### Access-result webhooks
 
-Enable **Access-result events** in the entry's options to register a signed
-`access.door.unlock` webhook. The console must be able to reach Home Assistant's
-internal URL. The receiver accepts local POST requests, verifies the signature
-and timestamp, and rejects repeated deliveries across entry reloads. The replay
-cache is held in memory and resets when Home Assistant restarts; the signature's
-timestamp window still applies. Without a reachable URL, sufficient token
-permissions and a returned signing secret, access-result events remain unavailable.
+Enable **Receive Access door events (granted and denied)** in the entry's options
+to register a signed `access.door.unlock` webhook. The console must be able to
+reach Home Assistant's internal URL. The receiver accepts local POST requests,
+verifies the signature and timestamp, and rejects repeated deliveries across
+entry reloads. The replay cache is held in memory and resets when Home Assistant
+restarts; the signature's timestamp window still applies. Without a reachable URL,
+sufficient token permissions and a returned signing secret, access-result events
+remain unavailable.
 Doorbell notifications continue independently.
 
 Reloading the entry preserves its remote webhook registration. Disabling the
@@ -552,7 +553,7 @@ Changing the host or port while keeping Access configured first deletes the old
 webhook endpoint. If deletion fails, reconfiguration stops and retains the old
 receiver and connection settings so you can retry after restoring connectivity.
 If an identity conflict or save error occurs after the receiver is retired,
-The integration schedules an entry reload to rebuild its webhook.
+the integration schedules an entry reload to rebuild its webhook.
 Check the old token's permissions if the console rejects deletion. If cleanup is
 no longer possible, clear the Access token first, remove the remaining endpoint
 in Access, then reconfigure the host or port.
