@@ -6,8 +6,11 @@ labels:
 body:
   - type: markdown
     attributes:
-      value: |
-        Thanks for proposing an enhancement. Complete this form with clear problem context, proposed architecture, and acceptance criteria so contributors, AI agents, and CodeRabbit AI (@coderabbitai plan) can generate a concrete implementation plan.
+      value: >-
+        Thanks for proposing an enhancement. Complete this form with clear problem
+        context, proposed architecture, and acceptance criteria so contributors,
+        AI agents, and CodeRabbit AI (@coderabbitai plan) can generate a concrete
+        implementation plan.
   - type: dropdown
     id: affected-area
     attributes:

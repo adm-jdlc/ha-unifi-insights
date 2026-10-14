@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Test fixtures for port forward and traffic rule responses.
 
 Sources:

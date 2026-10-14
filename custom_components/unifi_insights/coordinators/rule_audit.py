@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Rule change detection for the UniFi Insights config coordinator."""
 
 from __future__ import annotations
@@ -130,6 +131,7 @@ def _change(
     site_id: str,
     rule_id: str,
     snapshot: _RuleSnapshot,
+    *,
     changed_fields: list[str],
 ) -> dict[str, Any]:
     """Build one change record. It holds field names, never field values."""
@@ -161,16 +163,37 @@ def _diff(
 ) -> list[dict[str, Any]]:
     """Return the changes between two snapshots of one family on one site."""
     added = [
-        _change(RULE_CHANGE_ADDED, family, site_id, rule_id, current[rule_id], [])
+        _change(
+            RULE_CHANGE_ADDED,
+            family,
+            site_id,
+            rule_id,
+            current[rule_id],
+            changed_fields=[],
+        )
         for rule_id in sorted(current.keys() - previous.keys())
     ]
     modified = [
-        _change(RULE_CHANGE_MODIFIED, family, site_id, rule_id, current[rule_id], names)
+        _change(
+            RULE_CHANGE_MODIFIED,
+            family,
+            site_id,
+            rule_id,
+            current[rule_id],
+            changed_fields=names,
+        )
         for rule_id in sorted(current.keys() & previous.keys())
         if (names := _changed_fields(previous[rule_id], current[rule_id]))
     ]
     deleted = [
-        _change(RULE_CHANGE_DELETED, family, site_id, rule_id, previous[rule_id], [])
+        _change(
+            RULE_CHANGE_DELETED,
+            family,
+            site_id,
+            rule_id,
+            previous[rule_id],
+            changed_fields=[],
+        )
         for rule_id in sorted(previous.keys() - current.keys())
     ]
     return [*added, *modified, *deleted]

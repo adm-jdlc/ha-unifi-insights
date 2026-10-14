@@ -692,3 +692,48 @@ carrier_resume_subscriber:
   target:
     entity:
       integration: unifi_insights
+
+set_access_user_pin:
+  fields:
+    user_id:
+      required: true
+      selector:
+        text:
+    pin:
+      required: true
+      selector:
+        text:
+          type: password
+    console_id:
+      required: false
+      selector:
+        text:
+
+remove_access_user_pin:
+  fields:
+    user_id:
+      required: true
+      selector:
+        text:
+    console_id:
+      required: false
+      selector:
+        text:
+
+set_access_user_status:
+  fields:
+    user_id:
+      required: true
+      selector:
+        text:
+    status:
+      required: true
+      selector:
+        select:
+          options:
+            - "ACTIVE"
+            - "DEACTIVATED"
+    console_id:
+      required: false
+      selector:
+        text:

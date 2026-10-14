@@ -219,7 +219,7 @@ def discover_voucher_sensors(
             if key in known_sensor_keys:
                 continue
             unique_id = async_migrate_site_entity(
-                hass, entry, "sensor", namespace, site_id, description.key
+                hass, entry, "sensor", namespace, site_id, suffix=description.key
             )
             if unique_id is None:
                 continue

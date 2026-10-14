@@ -34,7 +34,7 @@ def _resolve_entity_ids(
                 build_site_unique_id(namespace, site_id, key) if namespace else None
             )
             uid = owned_site_entity_unique_id(
-                registry, entry_id, "sensor", legacy, target, key
+                registry, entry_id, "sensor", legacy, target, translation_key=key
             )
             entity_id = (
                 registry.async_get_entity_id("sensor", DOMAIN, uid) if uid else None

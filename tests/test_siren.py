@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the UniFi Protect siren platform.
 
 Most of these set the integration up through the real config entry and call the

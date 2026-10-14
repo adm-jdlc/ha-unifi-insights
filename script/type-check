@@ -2,8 +2,8 @@
 
 # script/type-check: Run type checking tools
 #
-# Runs Pyright for integration modules only. Tests are excluded so strict
-# typing status reflects production integration code.
+# Runs Pyright with the project configuration for integration modules and tests.
+# The configuration defines exclusions and diagnostic severities.
 #
 # Usage:
 #   ./script/type-check

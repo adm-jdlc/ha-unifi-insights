@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Helper utilities for UniFi Insights."""
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ def owned_site_entity_unique_id(
     domain: str,
     legacy_unique_id: str,
     unique_id: str | None,
+    *,
     translation_key: str,
 ) -> str | None:
     """Select an owned logical identity, never reusing physical or ambiguous rows."""
@@ -86,6 +88,7 @@ def async_migrate_site_entity(
     domain: str,
     namespace: str | None,
     site_id: str,
+    *,
     suffix: str,
 ) -> str | None:
     """Migrate an owned legacy row, returning the identity safe to construct."""
@@ -93,7 +96,7 @@ def async_migrate_site_entity(
     legacy = build_legacy_site_unique_id(site_id, suffix)
     target = build_site_unique_id(namespace, site_id, suffix) if namespace else None
     effective = owned_site_entity_unique_id(
-        registry, entry.entry_id, domain, legacy, target, suffix
+        registry, entry.entry_id, domain, legacy, target, translation_key=suffix
     )
     if effective != legacy or target is None or target == legacy:
         return effective
@@ -112,7 +115,7 @@ def async_migrate_site_entity(
             "Site entity registry update failed; keeping an eligible owned identity"
         )
         effective = owned_site_entity_unique_id(
-            registry, entry.entry_id, domain, legacy, target, suffix
+            registry, entry.entry_id, domain, legacy, target, translation_key=suffix
         )
         if effective is None:
             return None

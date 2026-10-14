@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """
 Derive a stable identity for the console a config entry talks to.
 

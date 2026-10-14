@@ -1,4 +1,5 @@
-"""Support for UniFi Protect events and network rule change events."""
+# Copyright 2026 UniFi Insights contributors
+"""Support for UniFi Protect, network rule change, and UniFi Access events."""
 
 from __future__ import annotations
 
@@ -10,8 +11,18 @@ from homeassistant.components.event import (
     EventEntity,
 )
 from homeassistant.core import callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .access_entity import (
+    UnifiAccessDoorEntity,
+    UnifiAccessEntity,
+    access_coordinator_for,
+    access_unique_id,
+    async_discover_access_entities,
+    door_device_info,
+    doorbell_device_info,
+)
 from .console_identity import resolve_console_namespace
 from .const import (
     DOMAIN,
@@ -21,6 +32,7 @@ from .const import (
     SMART_DETECT_PERSON,
     SMART_DETECT_VEHICLE,
 )
+from .coordinators.access import access_doorbell_signal, access_result_signal
 from .entity import get_field
 from .network_rule_audit_event import discover_network_rule_change_events
 
@@ -30,6 +42,7 @@ if TYPE_CHECKING:
 
     from . import UnifiInsightsConfigEntry
     from .coordinators import UnifiFacadeCoordinator
+    from .coordinators.access import UnifiInsightsAccessCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,12 +60,207 @@ EVENT_TYPE_SENSOR_OPEN = "opened"
 EVENT_TYPE_SENSOR_CLOSE = "closed"
 
 
+EVENT_TYPE_ACCESS_GRANTED = "access_granted"
+EVENT_TYPE_ACCESS_DENIED = "access_denied"
+_ACCESS_RESULT_EVENT_TYPES = {
+    "granted": EVENT_TYPE_ACCESS_GRANTED,
+    "denied": EVENT_TYPE_ACCESS_DENIED,
+}
+
+
+class UnifiAccessDoorbellEvent(UnifiAccessEntity, EventEntity):
+    """
+    A doorbell on UniFi Access hardware, one ``ring`` per live remote-view frame.
+
+    Rings are never stored. A ring that arrives before the entity is added is
+    held once and fired on add, so a reload does not repeat an old ring.
+    """
+
+    _feature = "notifications"
+    _attr_translation_key = "access_doorbell"
+    _attr_device_class = EventDeviceClass.DOORBELL
+    _attr_event_types: ClassVar[list[str]] = [EVENT_TYPE_DOORBELL_RING]  # type: ignore[misc]
+
+    def __init__(
+        self,
+        coordinator: UnifiInsightsAccessCoordinator,
+        device_id: str,
+        device_name: str | None,
+        *,
+        pending_ring: bool = False,
+    ) -> None:
+        """Create the doorbell entity for one Access device."""
+        super().__init__(coordinator)
+        self._device_id = device_id
+        self._pending_ring: bool = pending_ring
+        self._added: bool = False
+        self._attr_unique_id = access_unique_id(self._namespace, device_id, "doorbell")
+        self._attr_device_info = doorbell_device_info(
+            self._namespace, device_id, device_name
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Fire the ring that created this entity, if any, once it is added."""
+        await super().async_added_to_hass()
+        self._added = True
+        if self._pending_ring:
+            self._pending_ring = False
+            self._trigger_event(EVENT_TYPE_DOORBELL_RING)
+            self.async_write_ha_state()
+
+    @callback
+    def async_ring(self) -> None:
+        """Fire one ring. Before the entity is added, hold it for later."""
+        if not self._added:
+            self._pending_ring = True
+            return
+        self._trigger_event(EVENT_TYPE_DOORBELL_RING)
+        self.async_write_ha_state()
+
+
+class UnifiAccessResultEvent(UnifiAccessDoorEntity, EventEntity):
+    """Verified access-granted and access-denied results for one door."""
+
+    _attr_translation_key = "access_result"
+    _attr_event_types: ClassVar[list[str]] = [  # type: ignore[misc]
+        EVENT_TYPE_ACCESS_GRANTED,
+        EVENT_TYPE_ACCESS_DENIED,
+    ]
+
+    def __init__(
+        self, coordinator: UnifiInsightsAccessCoordinator, door_id: str
+    ) -> None:
+        """Create the result entity for one door."""
+        super().__init__(coordinator, door_id)
+        self._added: bool = False
+        self._attr_unique_id = access_unique_id(
+            self._namespace, door_id, "access_result"
+        )
+        door = self.door or {}
+        name = door.get("name")
+        self._attr_device_info = door_device_info(
+            self._namespace, door_id, name if isinstance(name, str) else None
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Mark the entity as added so results can be written."""
+        await super().async_added_to_hass()
+        self._added = True
+
+    def _is_present(self) -> bool:
+        """Return True only while the verified webhook is active."""
+        return self.coordinator.webhook_active and self.door is not None
+
+    @callback
+    def async_result(self, result: str, authentication: str | None) -> None:
+        """Fire the event type for a verified result. Attributes hold no secrets."""
+        event_type = _ACCESS_RESULT_EVENT_TYPES[result]
+        if not self._added:
+            return
+        self._trigger_event(
+            event_type,
+            {"door_id": self._door_id, "authentication": authentication},
+        )
+        self.async_write_ha_state()
+
+
+@callback
+def async_setup_access_events(
+    hass: HomeAssistant,
+    entry: UnifiInsightsConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Wire doorbell rings and access results to their entities."""
+    coordinator = access_coordinator_for(entry)
+    if coordinator is None or coordinator.namespace is None:
+        return
+
+    doorbells: dict[str, UnifiAccessDoorbellEvent] = {}
+    doorbell_ids: set[str] = set()
+
+    def _make_doorbell(device_id: str) -> UnifiAccessDoorbellEvent:
+        """Create a doorbell entity for a device of a known doorbell type."""
+        device = coordinator.data["devices"].get(device_id, {})
+        name = device.get("name")
+        entity = UnifiAccessDoorbellEvent(
+            coordinator, device_id, name if isinstance(name, str) else None
+        )
+        doorbells[device_id] = entity
+        return entity
+
+    async_discover_access_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        known_ids=doorbell_ids,
+        keys=lambda: sorted(coordinator.doorbell_device_ids),
+        make=_make_doorbell,
+    )
+
+    @callback
+    def _on_ring(payload: dict[str, Any]) -> None:
+        """Ring a known doorbell, or create the entity that is ringing now."""
+        device_id = payload["device_id"]
+        existing = doorbells.get(device_id)
+        if existing is not None:
+            existing.async_ring()
+            return
+        doorbell_ids.add(device_id)
+        entity = UnifiAccessDoorbellEvent(
+            coordinator,
+            device_id,
+            payload.get("device_name"),
+            pending_ring=True,
+        )
+        doorbells[device_id] = entity
+        async_add_entities([entity])
+
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, access_doorbell_signal(entry.entry_id), _on_ring)
+    )
+
+    result_doors: dict[str, UnifiAccessResultEvent] = {}
+    result_ids: set[str] = set()
+
+    def _make_result(door_id: str) -> UnifiAccessResultEvent:
+        """Create the result entity for one door."""
+        entity = UnifiAccessResultEvent(coordinator, door_id)
+        result_doors[door_id] = entity
+        return entity
+
+    async_discover_access_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        known_ids=result_ids,
+        keys=lambda: (
+            sorted(coordinator.data["doors"]) if coordinator.webhook_active else ()
+        ),
+        make=_make_result,
+    )
+
+    @callback
+    def _on_result(payload: dict[str, Any]) -> None:
+        """Route one verified result to its door's entity."""
+        entity = result_doors.get(payload["door_id"])
+        result = payload["result"]
+        if entity is None or result not in _ACCESS_RESULT_EVENT_TYPES:
+            return
+        entity.async_result(result, payload.get("authentication"))
+
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, access_result_signal(entry.entry_id), _on_result)
+    )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: UnifiInsightsConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up event entities for UniFi Insights integration."""
+    # Access events are set up before the Protect-dependent events below.
+    async_setup_access_events(hass, entry, async_add_entities)
     coordinator = entry.runtime_data.coordinator
 
     known_event_keys: set[tuple[str, str]] = set()

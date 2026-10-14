@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """UniFi Insights entity base class."""
 
 from __future__ import annotations

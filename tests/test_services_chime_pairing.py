@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the set_chime_paired_doorbells action.
 
 Most of these set the integration up through real config entries and call the

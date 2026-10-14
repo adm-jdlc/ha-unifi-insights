@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Data update coordinator for UniFi Insights."""
 
 from __future__ import annotations

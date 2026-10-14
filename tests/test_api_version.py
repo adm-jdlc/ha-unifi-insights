@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the vendored UniFi API version."""
 
 from custom_components.unifi_insights.api import __version__

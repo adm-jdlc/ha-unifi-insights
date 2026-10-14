@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Support for UniFi Insights buttons."""
 
 from __future__ import annotations
@@ -18,6 +19,13 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .access_entity import (
+    UnifiAccessDoorEntity,
+    access_coordinator_for,
+    access_unique_id,
+    async_discover_access_entities,
+    door_device_info,
+)
 from .client_wake import (
     find_client_by_mac,
     first_non_blank_text,
@@ -57,6 +65,7 @@ if TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
     from . import UnifiInsightsConfigEntry
+    from .coordinators.access import UnifiInsightsAccessCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -175,12 +184,64 @@ BUTTON_TYPES: tuple[UnifiInsightsButtonEntityDescription, ...] = (
 )
 
 
+class UnifiAccessUnlockButton(UnifiAccessDoorEntity, ButtonEntity):
+    """Remotely unlock one bound, non-gate Access door."""
+
+    _attr_translation_key = "access_door_unlock"
+
+    def __init__(
+        self, coordinator: UnifiInsightsAccessCoordinator, door_id: str
+    ) -> None:
+        """Create the unlock button for one door."""
+        super().__init__(coordinator, door_id)
+        self._attr_unique_id = access_unique_id(self._namespace, door_id, "unlock")
+        door = self.door or {}
+        name = door.get("name")
+        self._attr_device_info = door_device_info(
+            self._namespace, door_id, name if isinstance(name, str) else None
+        )
+
+    def _is_present(self) -> bool:
+        """Return True only for doors the console can remotely unlock."""
+        return self._door_id in self.coordinator.unlock_door_ids
+
+    async def async_press(self) -> None:
+        """Send the remote unlock; the relay state comes from the read-back."""
+        await async_call_coordinator_action(
+            self.coordinator,
+            "async_unlock_door",
+            "Could not unlock the Access door",
+            self._door_id,
+        )
+
+
+@callback
+def async_setup_access_buttons(
+    entry: UnifiInsightsConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Create an unlock button for every door the console can unlock remotely."""
+    coordinator = access_coordinator_for(entry)
+    if coordinator is None:
+        return
+
+    async_discover_access_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        known_ids=set(),
+        keys=lambda: sorted(coordinator.unlock_door_ids),
+        make=lambda door_id: UnifiAccessUnlockButton(coordinator, door_id),
+    )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: UnifiInsightsConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up buttons for UniFi Insights integration."""
+    # Access is set up before the Protect-dependent buttons below.
+    async_setup_access_buttons(config_entry, async_add_entities)
     coordinator: UnifiFacadeCoordinator = config_entry.runtime_data.coordinator
     client_control = config_entry.options.get(
         CONF_CLIENT_CONTROL, DEFAULT_CLIENT_CONTROL
@@ -303,7 +364,12 @@ async def async_setup_entry(
             if voucher_key in known_button_keys:
                 continue
             unique_id = async_migrate_site_entity(
-                hass, config_entry, "button", namespace, site_id, "generate_voucher"
+                hass,
+                config_entry,
+                "button",
+                namespace,
+                site_id,
+                suffix="generate_voucher",
             )
             if unique_id is None:
                 continue

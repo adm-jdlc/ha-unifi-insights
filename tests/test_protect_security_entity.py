@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the Protect 7.3.70 security device entities."""
 
 from __future__ import annotations

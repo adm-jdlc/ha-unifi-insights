@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for UniFi Insights services."""
 
 import ast
@@ -57,6 +58,9 @@ if TYPE_CHECKING:
 from custom_components.unifi_insights.api.network.client import UniFiNetworkClient
 from custom_components.unifi_insights.api.network.models.client import ClientType
 from custom_components.unifi_insights.const import DOMAIN, SERVICE_POWER_CYCLE_PORT
+from custom_components.unifi_insights.coordinators.access import (
+    UnifiInsightsAccessCoordinator,
+)
 from custom_components.unifi_insights.coordinators.carrier_fabric import (
     UnifiCarrierFabricCoordinator,
 )
@@ -3568,6 +3572,7 @@ class TestServiceCoordinatorContract:
         [
             ("coordinator", UnifiFacadeCoordinator),
             ("carrier_coordinator", UnifiCarrierFabricCoordinator),
+            ("access_coordinator", UnifiInsightsAccessCoordinator),
         ],
     )
     def test_every_coordinator_method_called_by_services_exists(
@@ -3576,7 +3581,8 @@ class TestServiceCoordinatorContract:
         """Every ``<variable>.<method>()`` in services.py must exist on its class.
 
         ``coordinator`` is the console facade, ``carrier_coordinator`` the
-        Carrier Fabric coordinator.
+        Carrier Fabric coordinator, and ``access_coordinator`` the UniFi Access
+        coordinator used by the admin user services.
 
         The service tests drive MagicMock coordinators, which happily accept any
         attribute name. That is how ``async_set_camera_chime_volume`` - a method

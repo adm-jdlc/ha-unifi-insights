@@ -23,7 +23,8 @@ repos:
           - --skip="./.*,*.csv,*.json,*.ambr"
           - --quiet-level=2
         exclude_types: [csv, json, html]
-        exclude: ^tests/fixtures/
+        # Built bundles contain minified identifiers, not editable prose.
+        exclude: ^(?:tests/fixtures/|custom_components/unifi_insights/frontend/.*\.js$)
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
@@ -59,17 +60,13 @@ repos:
           - --force
           - --keep-updates
         files: ^(custom_components|tests|script)/.+\.py$
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
+  - repo: local
     hooks:
       - id: mypy
-        exclude: ^custom_components/unifi_insights/api/
-        args:
-          - --ignore-missing-imports
-          - --no-strict-optional
-          - --check-untyped-defs
-          - --explicit-package-bases
-          - --namespace-packages
+        name: mypy
+        # Use the project environment's actual HA types and check the same
+        # complete package as the documented command.
+        entry: ./script/mypy
+        language: system
+        pass_filenames: false
         files: ^custom_components/.+\.py$
-        additional_dependencies:
-          - types-aiofiles

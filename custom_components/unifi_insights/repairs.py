@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Repairs for the UniFi Insights integration."""
 
 from __future__ import annotations
@@ -8,8 +9,8 @@ from typing import TYPE_CHECKING
 from homeassistant.components.repairs import RepairsFlow
 
 if TYPE_CHECKING:
+    from homeassistant.components.repairs import RepairsFlowResult
     from homeassistant.core import HomeAssistant
-    from homeassistant.data_entry_flow import FlowResult
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class UnifiInsightsRepairFlow(RepairsFlow):
 
     async def async_step_init(
         self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
+    ) -> RepairsFlowResult:
         """Handle the first step of the repair flow."""
         if self.issue_id == "deprecated_yaml":
             return await self.async_step_deprecated_yaml(user_input)
@@ -37,7 +38,7 @@ class UnifiInsightsRepairFlow(RepairsFlow):
 
     async def async_step_deprecated_yaml(
         self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
+    ) -> RepairsFlowResult:
         """Handle deprecated YAML configuration repair."""
         if user_input is not None:
             # User acknowledged - remove the issue
@@ -52,7 +53,7 @@ class UnifiInsightsRepairFlow(RepairsFlow):
 
     async def async_step_api_key_expired(
         self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
+    ) -> RepairsFlowResult:
         """Handle expired API key repair."""
         if user_input is not None:
             # Direct user to reconfigure
@@ -67,7 +68,7 @@ class UnifiInsightsRepairFlow(RepairsFlow):
 
     async def async_step_device_offline(
         self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
+    ) -> RepairsFlowResult:
         """Handle device offline repair."""
         if user_input is not None:
             # User acknowledged

@@ -674,7 +674,7 @@ async def test_async_get_wake_history_merges_sites_and_ignores_failures(
         if site_name == "site2_ref":
             return records_site2
         msg = "API failure"
-        raise UniFiResponseError(msg)
+        raise UniFiResponseError(msg, status_code=500)
 
     facade.network_client.clients.get_historical_legacy.side_effect = get_history
 

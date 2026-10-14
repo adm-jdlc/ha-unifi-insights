@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """
 Per-site network topology graph derived from coordinator data.
 

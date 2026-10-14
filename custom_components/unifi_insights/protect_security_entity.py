@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """
 Entities for UniFi Protect security devices: alarm hubs, link stations, fobs.
 

@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for UniFi Insights binary sensors."""
 
 from typing import TYPE_CHECKING

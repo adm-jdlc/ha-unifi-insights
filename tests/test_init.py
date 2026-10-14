@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the UniFi Insights integration initialization."""
 
 from typing import TYPE_CHECKING, Any
@@ -49,6 +50,7 @@ async def test_setup_entry_success(
     mock_network_client,
     mock_protect_client,
     mock_local_auth,
+    *,
     enable_custom_integrations,
 ) -> None:
     """Test successful setup of config entry."""
@@ -72,6 +74,7 @@ async def test_setup_legacy_credential_identity_without_console_mac(
     mock_network_client: MagicMock,
     mock_protect_client: MagicMock,
     mock_local_auth: MagicMock,
+    *,
     enable_custom_integrations: None,
     entity_registry: EntityRegistry,
     site_id: str,
@@ -128,6 +131,7 @@ async def test_setup_entry_auth_failed(
     mock_network_client,
     mock_protect_client,
     mock_local_auth,
+    *,
     enable_custom_integrations,
 ) -> None:
     """Test setup fails with authentication error."""
@@ -151,6 +155,7 @@ async def test_setup_entry_connection_error(
     mock_network_client,
     mock_protect_client,
     mock_local_auth,
+    *,
     enable_custom_integrations,
 ) -> None:
     """Test setup fails with connection error."""
@@ -174,6 +179,7 @@ async def test_setup_entry_timeout_error(
     mock_network_client,
     mock_protect_client,
     mock_local_auth,
+    *,
     enable_custom_integrations,
 ) -> None:
     """Test setup fails with timeout error."""
@@ -197,6 +203,7 @@ async def test_setup_entry_protect_unavailable(
     mock_network_client,
     mock_protect_client,
     mock_local_auth,
+    *,
     enable_custom_integrations,
 ) -> None:
     """Test setup succeeds even if Protect is unavailable."""
@@ -215,6 +222,7 @@ async def test_setup_entry_protect_only_console(
     mock_network_client,
     mock_protect_client,
     mock_local_auth,
+    *,
     enable_custom_integrations,
 ) -> None:
     """Test setup succeeds on Protect-only console like UNVR (Issue 93)."""
@@ -337,6 +345,7 @@ async def test_setup_entry_no_sites_found(
     mock_network_client,
     mock_protect_client,
     mock_local_auth,
+    *,
     enable_custom_integrations,
 ) -> None:
     """Test setup fails when no sites and no protect NVR are found."""
@@ -1208,6 +1217,7 @@ async def test_setup_entry_innerspace_only_console(
     mock_network_client: MagicMock,
     mock_protect_client: MagicMock,
     mock_innerspace_client: MagicMock,
+    *,
     mock_local_auth: MagicMock,
     enable_custom_integrations,
 ) -> None:

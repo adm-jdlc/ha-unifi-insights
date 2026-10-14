@@ -6,8 +6,12 @@ labels:
 body:
   - type: markdown
     attributes:
-      value: |
-        Thanks for reporting a bug. Use this form to describe a reproducible defect or regression. If you have setup questions or need general troubleshooting help, use GitHub Discussions instead. Once submitted, contributors or CodeRabbit AI (@coderabbitai plan) can generate an implementation plan to resolve this issue.
+      value: >-
+        Thanks for reporting a bug. Use this form to describe a reproducible defect
+        or regression. If you have setup questions or need general troubleshooting
+        help, use GitHub Discussions instead. Once submitted, contributors or
+        CodeRabbit AI (@coderabbitai plan) can generate an implementation plan to
+        resolve this issue.
   - type: dropdown
     id: affected-area
     attributes:

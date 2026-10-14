@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Switches for UniFi network rules (port forwards, traffic rules, NAT, routes)."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for UniFi Protect select entities."""
 
 from unittest.mock import AsyncMock, MagicMock, patch

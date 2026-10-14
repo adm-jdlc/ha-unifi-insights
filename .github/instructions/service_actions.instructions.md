@@ -31,7 +31,7 @@ against whichever entry happens to be first. Two resolvers do that:
 - `_get_coordinator_for_network_resource(hass, *, site_id=, device_id=, client_id=)`
   — the coordinator owning a Network site/device/client
 - `_get_coordinator_for_protect_resource(hass, *, resource_type=, resource_id=,
-  secondary_resource_type=, secondary_resource_id=, console_id=)` — the
+secondary_resource_type=, secondary_resource_id=, console_id=)` — the
   coordinator owning a Protect camera/light/chime/viewer
 
 Both raise `ServiceValidationError` when the target is unknown or ambiguous

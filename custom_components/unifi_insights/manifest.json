@@ -5,7 +5,13 @@
   "bluetooth": [],
   "codeowners": ["@ruaan-deysel"],
   "config_flow": true,
-  "dependencies": ["ffmpeg", "stream", "wake_on_lan", "websocket_api"],
+  "dependencies": [
+    "ffmpeg",
+    "stream",
+    "wake_on_lan",
+    "webhook",
+    "websocket_api"
+  ],
   "dhcp": [],
   "documentation": "https://github.com/tinkerologie/ha-unifi-insights",
   "integration_type": "hub",

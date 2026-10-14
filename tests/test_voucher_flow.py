@@ -85,11 +85,13 @@ async def test_generate_flow_updates_inventory_and_latest_voucher(
     network_client.reports.get_site_report = AsyncMock(return_value=[])
 
     # Initial state: no vouchers
-    created_voucher = Voucher(
-        id="v-1",
-        code="1234567890",
-        name="Home Assistant",
-        time_limit_minutes=480,
+    created_voucher = Voucher.model_validate(
+        {
+            "id": "v-1",
+            "code": "1234567890",
+            "name": "Home Assistant",
+            "time_limit_minutes": 480,
+        }
     )
     updated_voucher_model = _create_mock_model(
         {
@@ -324,7 +326,15 @@ async def voucher_flow(
         setattr(getattr(client, endpoint), method, AsyncMock(return_value=[]))
     config = UnifiConfigCoordinator(hass, client, None, entry)
     device = UnifiDeviceCoordinator(hass, client, None, entry, config)
-    facade = UnifiFacadeCoordinator(hass, client, None, entry, config, device, None)
+    facade = UnifiFacadeCoordinator(
+        hass,
+        client,
+        None,
+        entry,
+        config,
+        device_coordinator=device,
+        protect_coordinator=None,
+    )
     try:
         yield config, facade
     finally:
@@ -519,12 +529,14 @@ async def test_real_model_refresh_does_not_redisplay_expired_qr(
     """A real model's null timestamp defaults cannot resurrect an expired QR."""
     freezer.move_to("2026-10-09T11:59:00Z")
     config, facade = voucher_flow
-    known = Voucher(
-        id="v1",
-        code="1234567890",
-        expired=False,
-        activatedAt="2026-10-09T11:00:00Z",
-        expiresAt="2026-10-09T12:00:00Z",
+    known = Voucher.model_validate(
+        {
+            "id": "v1",
+            "code": "1234567890",
+            "expired": False,
+            "activatedAt": "2026-10-09T11:00:00Z",
+            "expiresAt": "2026-10-09T12:00:00Z",
+        }
     )
     config.network_client.vouchers.get_all_pages.return_value = [known]
     await config.async_refresh()
@@ -553,7 +565,9 @@ async def test_real_model_refresh_does_not_redisplay_expired_qr(
             assert image.available is False
             assert await image.async_image() is None
             assert image._expiration_unsub is None
-            omitted = Voucher(id="v1", code="1234567890", expired=False)
+            omitted = Voucher.model_validate(
+                {"id": "v1", "code": "1234567890", "expired": False}
+            )
             assert (
                 omitted.model_dump(by_alias=True, exclude_none=False)["expiresAt"]
                 is None

@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """InnerSpace entity base class and placement sensor for UniFi Insights."""
 
 from __future__ import annotations
@@ -13,13 +14,13 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
 from .coordinators.facade import UnifiFacadeCoordinator
 
 if TYPE_CHECKING:
+    from homeassistant.helpers.device_registry import DeviceInfo
     from homeassistant.helpers.entity import EntityDescription
     from homeassistant.helpers.typing import StateType
 
@@ -40,7 +41,7 @@ class UnifiInnerSpaceEntity(CoordinatorEntity[UnifiFacadeCoordinator]):
         self.entity_description = description
         self._record_id = record_id
         self._attr_unique_id = f"innerspace_{record_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(**self._build_device_info())  # type: ignore[typeddict-item]
+        self._attr_device_info = self._build_device_info()
 
     @property
     def innerspace_record(self) -> dict[str, Any] | None:
@@ -54,7 +55,7 @@ class UnifiInnerSpaceEntity(CoordinatorEntity[UnifiFacadeCoordinator]):
         record = devices.get(self._record_id)
         return record if isinstance(record, dict) else None
 
-    def _build_device_info(self) -> dict[str, Any]:
+    def _build_device_info(self) -> DeviceInfo:
         """
         Build device info for an InnerSpace record.
 
@@ -105,7 +106,7 @@ class UnifiInnerSpaceEntity(CoordinatorEntity[UnifiFacadeCoordinator]):
             or record.get("model")
             or f"UniFi InnerSpace Device {self._record_id}"
         )
-        device_info: dict[str, Any] = {
+        device_info: DeviceInfo = {
             "identifiers": {(DOMAIN, f"innerspace_{self._record_id}")},
             "name": str(name),
             "manufacturer": MANUFACTURER,
@@ -118,8 +119,9 @@ class UnifiInnerSpaceEntity(CoordinatorEntity[UnifiFacadeCoordinator]):
     @property
     def device_info(self) -> DeviceInfo:
         """Return current device info reflecting any updated MAC correlation."""
-        self._attr_device_info = DeviceInfo(**self._build_device_info())  # type: ignore[typeddict-item]
-        return self._attr_device_info
+        device_info = self._build_device_info()
+        self._attr_device_info = device_info
+        return device_info
 
     def _reconcile_device_association(self, new_device_info: DeviceInfo) -> None:
         """Reconcile entity registry device_id when MAC correlation changes."""
@@ -162,7 +164,7 @@ class UnifiInnerSpaceEntity(CoordinatorEntity[UnifiFacadeCoordinator]):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        new_device_info = DeviceInfo(**self._build_device_info())  # type: ignore[typeddict-item]
+        new_device_info = self._build_device_info()
         self._reconcile_device_association(new_device_info)
         self._attr_available = self.available
         self.async_write_ha_state()

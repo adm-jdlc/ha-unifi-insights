@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for data transformation functions."""
 
 from typing import Any

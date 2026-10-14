@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Support for the UniFi Protect alarm control panel."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for UniFi Insights device tracker platform."""
 
 from __future__ import annotations
@@ -1270,6 +1271,7 @@ class TestEntityPlatformRestoration:
         mock_config_entry: MockConfigEntry,
         mock_network_client: MagicMock,
         mock_protect_client: MagicMock,
+        *,
         mock_local_auth: MagicMock,
         enable_custom_integrations: None,
     ) -> None:
@@ -1343,6 +1345,7 @@ class TestEntityPlatformRestoration:
         mock_config_entry: MockConfigEntry,
         mock_network_client: MagicMock,
         mock_protect_client: MagicMock,
+        *,
         mock_local_auth: MagicMock,
         enable_custom_integrations: None,
     ) -> None:

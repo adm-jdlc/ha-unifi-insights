@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for UniFi network rule change event entities."""
 
 from __future__ import annotations

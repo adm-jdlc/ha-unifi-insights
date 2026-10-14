@@ -13,11 +13,11 @@ export const SCHEMA_VERSION = 1;
 export const MAX_CLIENTS_PER_SITE = 500;
 
 export const NODE_KINDS = [
-    "gateway",
-    "switch",
-    "access_point",
-    "client",
-    "other",
+  "gateway",
+  "switch",
+  "access_point",
+  "client",
+  "other",
 ] as const;
 export type NodeKind = (typeof NODE_KINDS)[number];
 export const NODE_STATES = ["online", "offline", "unknown"] as const;
@@ -31,8 +31,8 @@ export type TopologyStatus = (typeof TOPOLOGY_STATUSES)[number];
 export const ISSUE_SEVERITIES = ["info", "warning", "error"] as const;
 export type IssueSeverity = (typeof ISSUE_SEVERITIES)[number];
 export const UNRESOLVED_REASONS = [
-    "parent_not_found",
-    "no_uplink_data",
+  "parent_not_found",
+  "no_uplink_data",
 ] as const;
 export type UnresolvedReason = (typeof UNRESOLVED_REASONS)[number];
 
@@ -41,47 +41,47 @@ export type UnresolvedReason = (typeof UNRESOLVED_REASONS)[number];
  * HMAC for records keyed only by MAC. Names are never MACs.
  */
 export interface TopologyNode {
-    id: string;
-    kind: NodeKind;
-    name: string;
-    state: NodeState;
-    model?: string;
-    /** Home Assistant device registry id; infrastructure nodes only. */
-    ha_device_id?: string;
-    /** Clients only. */
-    connection?: ClientConnection;
-    /** Clients on a VLAN-tagged network only. */
-    vlan_id?: number;
-    network_name?: string;
+  id: string;
+  kind: NodeKind;
+  name: string;
+  state: NodeState;
+  model?: string;
+  /** Home Assistant device registry id; infrastructure nodes only. */
+  ha_device_id?: string;
+  /** Clients only. */
+  connection?: ClientConnection;
+  /** Clients on a VLAN-tagged network only. */
+  vlan_id?: number;
+  network_name?: string;
 }
 
 /** One uplink. NOTE: `source` is the CHILD, `target` is the PARENT. */
 export interface TopologyEdge {
-    source: string;
-    target: string;
-    medium: LinkMedium;
-    speed_mbps?: number;
-    /** Port on the parent the child is plugged into. */
-    parent_port?: number;
-    /** The child's own uplink port. */
-    child_port?: number;
-    /** PoE draw on the parent port (device edges only). */
-    poe_power_w?: number;
+  source: string;
+  target: string;
+  medium: LinkMedium;
+  speed_mbps?: number;
+  /** Port on the parent the child is plugged into. */
+  parent_port?: number;
+  /** The child's own uplink port. */
+  child_port?: number;
+  /** PoE draw on the parent port (device edges only). */
+  poe_power_w?: number;
 }
 
 export interface TopologyIssue {
-    code: string;
-    severity: IssueSeverity;
+  code: string;
+  severity: IssueSeverity;
 }
 
 export interface TopologyUnresolved {
-    node_id: string;
-    reason: UnresolvedReason;
+  node_id: string;
+  reason: UnresolvedReason;
 }
 
 export interface TopologyTruncation {
-    clients_total: number;
-    clients_included: number;
+  clients_total: number;
+  clients_included: number;
 }
 
 /**
@@ -94,30 +94,30 @@ export interface TopologyTruncation {
  * empty revision. After `entry_unloaded` the server has ended the subscription.
  */
 export interface SiteTopology {
-    schema_version: number;
-    entry_id: string;
-    site_id: string;
-    site_name: string;
-    /** Opaque change token (16 hex chars), or "" on unavailable snapshots. */
-    revision: string;
-    status: TopologyStatus;
-    issues: TopologyIssue[];
-    nodes: TopologyNode[];
-    edges: TopologyEdge[];
-    unresolved: TopologyUnresolved[];
-    truncation: TopologyTruncation | null;
+  schema_version: number;
+  entry_id: string;
+  site_id: string;
+  site_name: string;
+  /** Opaque change token (16 hex chars), or "" on unavailable snapshots. */
+  revision: string;
+  status: TopologyStatus;
+  issues: TopologyIssue[];
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  unresolved: TopologyUnresolved[];
+  truncation: TopologyTruncation | null;
 }
 
 export interface TopologySite {
-    id: string;
-    name: string;
+  id: string;
+  name: string;
 }
 
 /** One loaded config entry, as listed by `topology/sources`. */
 export interface TopologySource {
-    entry_id: string;
-    title: string;
-    sites: TopologySite[];
+  entry_id: string;
+  title: string;
+  sites: TopologySite[];
 }
 
 export const WS_SOURCES = "unifi_insights/topology/sources";
@@ -136,46 +136,43 @@ export const ERR_SITE_NOT_SELECTED = "site_not_selected";
 
 /** The backend speaks a schema this card was not built for. */
 export class IncompatibleSchemaError extends Error {
-    readonly received: unknown;
+  readonly received: unknown;
 
-    constructor(received: unknown) {
-        super(`Unsupported topology schema_version ${String(received)}`);
-        this.name = "IncompatibleSchemaError";
-        this.received = received;
-    }
+  constructor(received: unknown) {
+    super(`Unsupported topology schema_version ${String(received)}`);
+    this.name = "IncompatibleSchemaError";
+    this.received = received;
+  }
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-    typeof value === "object" && value !== null && !Array.isArray(value);
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
  * Validate a pushed payload's envelope. Throws IncompatibleSchemaError for
  * another schema version and TypeError for a malformed payload.
  */
 export function parseSnapshot(raw: unknown): SiteTopology {
-    if (!isRecord(raw))
-        throw new TypeError("Topology snapshot is not an object");
-    if (typeof raw.schema_version !== "number")
-        throw new TypeError(
-            "Topology snapshot field schema_version is not a number",
-        );
-    if (raw.schema_version !== SCHEMA_VERSION)
-        throw new IncompatibleSchemaError(raw.schema_version);
-    for (const key of ["nodes", "edges", "issues", "unresolved"] as const) {
-        if (!Array.isArray(raw[key]))
-            throw new TypeError(`Topology snapshot field ${key} is not a list`);
-    }
-    for (const key of [
-        "entry_id",
-        "site_id",
-        "site_name",
-        "revision",
-        "status",
-    ] as const) {
-        if (typeof raw[key] !== "string")
-            throw new TypeError(
-                `Topology snapshot field ${key} is not a string`,
-            );
-    }
-    return raw as unknown as SiteTopology;
+  if (!isRecord(raw)) throw new TypeError("Topology snapshot is not an object");
+  if (typeof raw.schema_version !== "number")
+    throw new TypeError(
+      "Topology snapshot field schema_version is not a number",
+    );
+  if (raw.schema_version !== SCHEMA_VERSION)
+    throw new IncompatibleSchemaError(raw.schema_version);
+  for (const key of ["nodes", "edges", "issues", "unresolved"] as const) {
+    if (!Array.isArray(raw[key]))
+      throw new TypeError(`Topology snapshot field ${key} is not a list`);
+  }
+  for (const key of [
+    "entry_id",
+    "site_id",
+    "site_name",
+    "revision",
+    "status",
+  ] as const) {
+    if (typeof raw[key] !== "string")
+      throw new TypeError(`Topology snapshot field ${key} is not a string`);
+  }
+  return raw as unknown as SiteTopology;
 }

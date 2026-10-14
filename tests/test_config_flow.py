@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the UniFi Insights config flow."""
 
 from typing import TYPE_CHECKING

@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for UniFi Insights console identity separation (PR D).
 
 Verifies:
@@ -909,7 +910,7 @@ async def test_flow_finds_console_in_a_later_site(hass: HomeAssistant) -> None:
     net_cm, net_client = _make_mock_client(
         sites=[MagicMock(id="site-a", name="A"), MagicMock(id="site-b", name="B")],
     )
-    per_site = {
+    per_site: dict[str | None, list[MagicMock]] = {
         "site-a": [MagicMock(type=None, model="USW Pro Max 24", name="Switch")],
         "site-b": [
             MagicMock(
@@ -921,7 +922,9 @@ async def test_flow_finds_console_in_a_later_site(hass: HomeAssistant) -> None:
         ],
     }
 
-    async def _devices(site_id=None, **_kwargs):
+    async def _devices(
+        site_id: str | None = None, **_kwargs: object
+    ) -> list[MagicMock]:
         return per_site.get(site_id, [])
 
     net_client.devices.get_all = AsyncMock(side_effect=_devices)

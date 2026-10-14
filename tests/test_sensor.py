@@ -4149,7 +4149,7 @@ class TestSensorAdditionalCoverageGaps:
             ]
         }
         _discover_outlet_sensors(
-            coordinator, "site1", "dev1", device_data, known_keys, entities
+            coordinator, "site1", "dev1", device_data, known_keys, entities=entities
         )
         expected_keys = {("site1", "dev1", 2, d.key) for d in OUTLET_SENSOR_TYPES}
         assert known_keys == expected_keys
@@ -4157,7 +4157,12 @@ class TestSensorAdditionalCoverageGaps:
 
         entities_second: list[Any] = []
         _discover_outlet_sensors(
-            coordinator, "site1", "dev1", device_data, known_keys, entities_second
+            coordinator,
+            "site1",
+            "dev1",
+            device_data,
+            known_keys,
+            entities=entities_second,
         )
         assert len(entities_second) == 0
 
@@ -4483,6 +4488,7 @@ class TestStalePortCleanupNativeRegistry:
         mock_config_entry: MockConfigEntry,
         cleanup_coordinator: MagicMock,
         namespace: str,
+        *,
         site_id: str,
         translation_key: str | None,
     ) -> None:

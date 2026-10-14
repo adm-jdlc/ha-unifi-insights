@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the UniFi Insights WiFi QR code image platform."""
 
 from __future__ import annotations

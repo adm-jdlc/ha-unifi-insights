@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """The UniFi Insights integration."""
 
 from __future__ import annotations
@@ -13,13 +14,20 @@ from homeassistant.const import CONF_API_KEY, CONF_HOST, CONF_VERIFY_SSL, Platfo
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .access_webhook import (
+    async_remove_access_webhook,
+    async_setup_access_webhook,
+    async_unload_access_webhook,
+)
 from .api import (
     ApiKeyAuth,
     ConnectionType,
     LocalAuth,
     UniFiConnectionError,
+    UniFiError,
     UniFiTimeoutError,
 )
+from .api.access import UniFiAccessClient
 from .api.carrier_fabric.client import UniFiCarrierFabricClient
 from .api.innerspace import UniFiInnerSpaceClient
 from .api.network import UniFiNetworkClient
@@ -37,12 +45,15 @@ from .console_identity import (
 )
 from .const import (
     CARRIER_FABRIC_REQUEST_TIMEOUT,
+    CONF_ACCESS_PORT,
+    CONF_ACCESS_TOKEN,
     CONF_CARRIER_ORG_ID,
     CONF_CONNECTION_TYPE,
     CONF_CONSOLE_ID,
     CONF_CONSOLE_NAME,
     CONNECTION_TYPE_CARRIER_FABRIC,
     CONNECTION_TYPE_LOCAL,
+    DEFAULT_ACCESS_PORT,
     DEFAULT_API_HOST,
     DOMAIN,
     MOBILITY_DEVICE_PREFIX,
@@ -61,6 +72,7 @@ from .coordinators import (
     UnifiInsightsSiteManagerCoordinator,
     UnifiProtectCoordinator,
 )
+from .coordinators.access import UnifiInsightsAccessCoordinator
 from .coordinators.mobility import (
     ACCESS_UNKNOWN,
     async_hand_over_mobility,
@@ -74,6 +86,7 @@ from .frontend import async_register_frontend
 from .probe import (
     ProbeResult,
     ProbeStatus,
+    async_probe_access,
     async_probe_carrier_fabric,
     async_probe_innerspace,
     async_probe_network,
@@ -84,6 +97,7 @@ from .topology_keys import async_load_node_keys, async_remove_node_key
 from .websocket_api import async_register_websocket_commands
 
 if TYPE_CHECKING:
+    from aiohttp import ClientSession
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.device_registry import DeviceEntry
 
@@ -103,6 +117,8 @@ class UnifiInsightsData:
     site_manager_fingerprint: str | None = None
     # Only the remote entry that owns its cloud key's Mobility data has one.
     mobility_coordinator: UnifiInsightsMobilityCoordinator | None = None
+    access_client: UniFiAccessClient | None = None
+    access_coordinator: UnifiInsightsAccessCoordinator | None = None
     # Facade coordinator for backward compatibility with entity classes
     _facade_coordinator: UnifiFacadeCoordinator | None = None
 
@@ -132,10 +148,12 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
     Platform.CAMERA,
+    Platform.COVER,
     Platform.DEVICE_TRACKER,
     Platform.EVENT,
     Platform.IMAGE,
     Platform.LIGHT,
+    Platform.LOCK,
     Platform.SWITCH,
     Platform.SELECT,
     Platform.NUMBER,
@@ -651,6 +669,16 @@ async def async_setup_entry(
         await protect_coordinator.async_start_websocket()
         entry.async_on_unload(protect_coordinator.async_stop_websocket)
 
+    access_client: UniFiAccessClient | None = None
+    access_coordinator: UnifiInsightsAccessCoordinator | None = None
+    if is_local and entry.data.get(CONF_ACCESS_TOKEN):
+        access_client, access_coordinator = await _async_setup_access(
+            hass,
+            cast("UnifiInsightsConfigEntry", entry),
+            websession,
+            verify_ssl=verify_ssl,
+        )
+
     site_manager_fingerprint: str | None = None
     site_manager_coordinator: UnifiInsightsSiteManagerCoordinator | None = None
     mobility_coordinator: UnifiInsightsMobilityCoordinator | None = None
@@ -689,11 +717,19 @@ async def async_setup_entry(
             site_manager_coordinator=site_manager_coordinator,
             site_manager_fingerprint=site_manager_fingerprint,
             mobility_coordinator=mobility_coordinator,
+            access_client=access_client,
+            access_coordinator=access_coordinator,
             _facade_coordinator=facade_coordinator,
         )
 
+        if access_coordinator:
+            entry.async_on_unload(lambda: async_unload_access_webhook(hass, entry))
+            await async_setup_access_webhook(hass, entry, access_coordinator)
+
         _LOGGER.debug("Setting up platforms: %s", PLATFORMS)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        if access_coordinator:
+            await access_coordinator.async_start_websocket()
         entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     except BaseException:
         if site_manager_fingerprint:
@@ -704,6 +740,58 @@ async def async_setup_entry(
 
     _LOGGER.info("UniFi Insights integration setup completed successfully")
     return True
+
+
+async def _async_setup_access(
+    hass: HomeAssistant,
+    entry: UnifiInsightsConfigEntry,
+    session: ClientSession,
+    *,
+    verify_ssl: bool,
+) -> tuple[UniFiAccessClient | None, UnifiInsightsAccessCoordinator | None]:
+    """Set up optional Access without changing the existing application gate."""
+    client: UniFiAccessClient | None = None
+    try:
+        client = UniFiAccessClient(
+            token=entry.data[CONF_ACCESS_TOKEN],
+            host=entry.data.get(CONF_HOST, DEFAULT_API_HOST),
+            port=entry.data.get(CONF_ACCESS_PORT, DEFAULT_ACCESS_PORT),
+            verify_ssl=verify_ssl,
+            session=session,
+        )
+        result = await async_probe_access(client)
+        if result.status not in (ProbeStatus.AVAILABLE, ProbeStatus.EMPTY):
+            _LOGGER.warning(
+                "UniFi Access is unavailable (%s); other applications remain active",
+                result.status,
+            )
+            await _async_close_access(client)
+            return None, None
+        coordinator = UnifiInsightsAccessCoordinator(hass, entry, client)
+        await coordinator.async_config_entry_first_refresh()
+        if coordinator.auth_failed:
+            await _async_close_access(client)
+            return None, None
+        # Cleanup also runs if platform forwarding subsequently fails.
+        entry.async_on_unload(lambda: _async_close_access(client))
+        entry.async_on_unload(coordinator.async_stop_websocket)
+    except (UniFiError, ConfigEntryNotReady) as err:
+        _LOGGER.warning(
+            "UniFi Access setup failed (%s); other applications remain active",
+            type(err).__name__,
+        )
+        if client is not None:
+            await _async_close_access(client)
+        return None, None
+    return client, coordinator
+
+
+async def _async_close_access(client: UniFiAccessClient) -> None:
+    """Close the optional client without exposing secrets or blocking teardown."""
+    try:
+        await client.close()
+    except Exception as err:
+        _LOGGER.debug("Error closing Access client (%s)", type(err).__name__)
 
 
 async def async_unload_entry(
@@ -729,6 +817,11 @@ async def async_unload_entry(
     if unload_ok and isinstance(entry.runtime_data, UnifiInsightsData):
         data = entry.runtime_data
         _LOGGER.debug("Closing API clients")
+        if data.access_coordinator:
+            await data.access_coordinator.async_stop_websocket()
+        await async_unload_access_webhook(hass, entry)
+        if data.access_client:
+            await _async_close_access(data.access_client)
         if data.protect_client:
             # Stop the WebSocket (and await its background task) *before*
             # closing the client below - stopping it after would leave the
@@ -898,6 +991,8 @@ async def async_remove_entry(
     _clear_setup_probe_attempts(hass, entry.entry_id)
     await async_remove_node_key(hass, entry.entry_id)
     async_hand_over_mobility(hass, entry)
+    if entry.data.get(CONF_ACCESS_TOKEN):
+        await async_remove_access_webhook(hass, entry)
 
 
 async def async_reload_entry(

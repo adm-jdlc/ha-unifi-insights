@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,6 +22,9 @@ from custom_components.unifi_insights.api.mobility.client import (
     _MAX_PAGES,
     _PAGE_SIZE,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 _WORKSPACE_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 _DEVICE_ID = "550e8400-e29b-41d4-a716-446655440000"
@@ -546,22 +549,36 @@ async def test_update_device_wireless_validates_required_fields(
     assert session.requests == []
 
 
+async def _call_positionally(
+    method: Callable[..., Awaitable[object]], *args: str
+) -> object:
+    """Call an endpoint with positional args, bypassing its static signature."""
+    return await method(*args)
+
+
 async def test_update_endpoints_enforce_keyword_only_arguments() -> None:
     """Update endpoints reject positional arguments for update fields."""
     session = _Session([])
     client = _client(session)
 
     with pytest.raises(TypeError):
-        await client.update_device_name(  # type: ignore[misc]
-            _WORKSPACE_ID, _DEVICE_ID, "Branch Office Router"
+        await _call_positionally(
+            client.update_device_name,
+            _WORKSPACE_ID,
+            _DEVICE_ID,
+            "Branch Office Router",
         )
     with pytest.raises(TypeError):
-        await client.update_device_network(  # type: ignore[call-arg]
-            _WORKSPACE_ID, _DEVICE_ID, "192.168.10.1"
+        await _call_positionally(
+            client.update_device_network, _WORKSPACE_ID, _DEVICE_ID, "192.168.10.1"
         )
     with pytest.raises(TypeError):
-        await client.update_device_wireless(  # type: ignore[misc]
-            _WORKSPACE_ID, _DEVICE_ID, "MyNetwork", "test-password"
+        await _call_positionally(
+            client.update_device_wireless,
+            _WORKSPACE_ID,
+            _DEVICE_ID,
+            "MyNetwork",
+            "test-password",
         )
     assert session.requests == []
 

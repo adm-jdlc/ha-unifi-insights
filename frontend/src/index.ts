@@ -16,12 +16,12 @@ defineOnce(EDITOR_TAG, UnifiInsightsTopologyCardEditor);
 const localize = makeLocalize("en");
 window.customCards ??= [];
 if (!window.customCards.some((card) => card.type === CARD_TAG)) {
-    window.customCards.push({
-        type: CARD_TAG,
-        name: localize("card.name"),
-        description: localize("card.description"),
-        preview: true,
-        documentationURL:
-            "https://github.com/tinkerologie/ha-unifi-insights#network-topology-card",
-    });
+  window.customCards.push({
+    type: CARD_TAG,
+    name: localize("card.name"),
+    description: localize("card.description"),
+    preview: true,
+    documentationURL:
+      "https://github.com/tinkerologie/ha-unifi-insights#network-topology-card",
+  });
 }

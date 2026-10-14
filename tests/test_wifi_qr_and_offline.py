@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Unit tests for WiFi QR payloads and per-SSID counts.
 
 Covers the pure-logic helpers behind issues #49 and #52, none of which

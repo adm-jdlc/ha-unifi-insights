@@ -295,7 +295,7 @@ class TestFacadeGenerateVoucher:
         self, facade: UnifiFacadeCoordinator
     ) -> None:
         """Test async_generate_voucher returns created vouchers and records latest."""
-        v1 = Voucher(id="v1", code="1111111111", name="G1")
+        v1 = Voucher.model_validate({"id": "v1", "code": "1111111111", "name": "G1"})
         facade.network_client.vouchers.create = AsyncMock(return_value=[v1])
         result1 = await facade.async_generate_voucher(
             site_id="site1", name="G1", time_limit_minutes=60
@@ -303,7 +303,7 @@ class TestFacadeGenerateVoucher:
         assert result1 == [v1]
         assert facade.data["latest_vouchers"]["site1"]["id"] == "v1"
 
-        v2 = Voucher(id="v2", code="2222222222", name="G2")
+        v2 = Voucher.model_validate({"id": "v2", "code": "2222222222", "name": "G2"})
         facade.network_client.vouchers.create = AsyncMock(return_value=[v2])
         result2 = await facade.async_generate_voucher(
             site_id="site1", name="G2", time_limit_minutes=60
@@ -315,8 +315,8 @@ class TestFacadeGenerateVoucher:
         self, facade: UnifiFacadeCoordinator
     ) -> None:
         """When multiple vouchers are created, the last one is recorded as latest."""
-        v1 = Voucher(id="v1", code="1111111111", name="Batch")
-        v2 = Voucher(id="v2", code="2222222222", name="Batch")
+        v1 = Voucher.model_validate({"id": "v1", "code": "1111111111", "name": "Batch"})
+        v2 = Voucher.model_validate({"id": "v2", "code": "2222222222", "name": "Batch"})
         facade.network_client.vouchers.create = AsyncMock(return_value=[v1, v2])
         await facade.async_generate_voucher(
             site_id="site1", name="Batch", time_limit_minutes=60, count=2
@@ -341,7 +341,7 @@ class TestFacadeGenerateVoucher:
     ) -> None:
         """Creating a voucher triggers targeted refresh for that site."""
         config_coord = mock_sub_coordinators[0]
-        v = Voucher(id="v1", code="1111111111", name="G1")
+        v = Voucher.model_validate({"id": "v1", "code": "1111111111", "name": "G1"})
         facade.network_client.vouchers.create = AsyncMock(return_value=[v])
         await facade.async_generate_voucher(
             site_id="site1", name="G1", time_limit_minutes=60
@@ -359,7 +359,7 @@ class TestFacadeGenerateVoucher:
         config_coord.async_refresh_vouchers = AsyncMock(
             side_effect=RuntimeError("Refresh error")
         )
-        v = Voucher(id="v1", code="1111111111", name="G1")
+        v = Voucher.model_validate({"id": "v1", "code": "1111111111", "name": "G1"})
         facade.network_client.vouchers.create = AsyncMock(return_value=[v])
         with caplog.at_level("WARNING"):
             result = await facade.async_generate_voucher(

@@ -17,12 +17,16 @@
         "data": {
           "host": "Host URL",
           "api_key": "[%key:common::config_flow::data::api_key%]",
-          "verify_ssl": "Verify SSL Certificate"
+          "verify_ssl": "Verify SSL Certificate",
+          "access_token": "UniFi Access API token (optional)",
+          "access_port": "UniFi Access developer API port"
         },
         "data_description": {
           "host": "The URL of your UniFi device (e.g., https://192.168.1.1)",
-          "api_key": "API key from your UniFi Controller (Settings \u2192 Control Plane \u2192 API Keys)",
-          "verify_ssl": "Disable for self-signed certificates (common for local devices)"
+          "api_key": "API key from your UniFi Controller (Settings → Control Plane → API Keys)",
+          "verify_ssl": "Disable for self-signed certificates (common for local devices)",
+          "access_token": "Create this in Access > Settings > General > Advanced. It is separate from the UniFi API key and enables Access doors, emergency controls and events. Leave empty to skip Access.",
+          "access_port": "Port of the UniFi Access developer API on the console. The official default is 12445."
         }
       },
       "remote": {
@@ -52,7 +56,7 @@
           "api_key": "[%key:common::config_flow::data::api_key%]"
         },
         "data_description": {
-          "api_key": "A new API key from your UniFi Controller (Settings \u2192 Control Plane \u2192 API Keys)"
+          "api_key": "A new API key from your UniFi Controller (Settings → Control Plane → API Keys)"
         }
       },
       "reconfigure": {
@@ -62,13 +66,19 @@
           "host": "Host URL",
           "api_key": "[%key:common::config_flow::data::api_key%]",
           "verify_ssl": "Verify SSL Certificate",
-          "console_id": "Console ID"
+          "console_id": "Console ID",
+          "access_token": "UniFi Access API token (optional)",
+          "access_port": "UniFi Access developer API port",
+          "clear_access_token": "Remove the Access token"
         },
         "data_description": {
           "host": "The URL of your UniFi device (e.g., https://192.168.1.1)",
-          "api_key": "API key from your UniFi Controller (Settings \u2192 Control Plane \u2192 API Keys)",
+          "api_key": "API key from your UniFi Controller (Settings → Control Plane → API Keys)",
           "verify_ssl": "Disable for self-signed certificates (common for local devices)",
-          "console_id": "The UniFi cloud console ID this entry connects to"
+          "console_id": "The UniFi cloud console ID this entry connects to",
+          "access_token": "Enter a new token to replace the stored one. Leave empty to keep the current token.",
+          "access_port": "Port of the UniFi Access developer API on the console.",
+          "clear_access_token": "Turn on to remove the Access token and its access-result webhook. Ignored when a new token is entered."
         }
       },
       "carrier_fabric": {
@@ -111,7 +121,10 @@
       "api_unsupported": "The UniFi controller did not respond to the official Network Integration API (HTTP 404). This integration requires UniFi OS (e.g. UDM, UDR, Cloud Key Gen2+, UCG) or UniFi Cloud access. Self-hosted UniFi Network installations (Linux/Docker/Proxmox) do not expose this API.",
       "site_parse_error": "Failed to parse site data from the UniFi controller. Please ensure your UniFi OS controller firmware is up to date.",
       "unknown": "[%key:common::config_flow::error::unknown%]",
-      "carrier_missing_scope": "The ISP API key lacks the required Carrier Fabric permissions."
+      "carrier_missing_scope": "The ISP API key lacks the required Carrier Fabric permissions.",
+      "access_invalid_auth": "The UniFi Access token was rejected. Create a new token in Access and try again.",
+      "access_cannot_connect": "Could not reach the UniFi Access API. Check the host and port, and that Access is running.",
+      "access_unsupported": "This console did not answer the UniFi Access API. Check that UniFi Access is installed and up to date."
     },
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
@@ -131,7 +144,8 @@
           "client_control": "Enable Client Control",
           "site_ids": "Sites",
           "track_subscribers": "Track individual subscribers as devices",
-          "carrier_actions": "Enable service actions (suspend and resume subscribers)"
+          "carrier_actions": "Enable service actions (suspend and resume subscribers)",
+          "access_webhook": "Receive Access door events (granted and denied)"
         },
         "data_description": {
           "track_wifi_clients": "Create device tracker entities for connected WiFi clients. This may create many entities.",
@@ -139,7 +153,8 @@
           "client_control": "Create allow/block switch and reconnect button entities for connected clients, and Wake-on-LAN buttons (disabled by default) for wired clients. Turning this off removes client buttons.",
           "site_ids": "Only poll these sites. Leave empty to include every site on the console. Unselected sites are not queried, which reduces API traffic on multi-site consoles.",
           "track_subscribers": "Create device entries for each subscriber in your Carrier Fabric organisation.",
-          "carrier_actions": "Allow suspending and resuming subscriber services from Home Assistant."
+          "carrier_actions": "Allow suspending and resuming subscriber services from Home Assistant.",
+          "access_webhook": "Home Assistant must be reachable from the console for these events. Turn off to remove the Access webhook."
         }
       }
     }
@@ -166,20 +181,6 @@
         "device_id": {
           "name": "Device ID",
           "description": "The ID of the device to restart."
-        }
-      }
-    },
-    "play_chime_ringtone": {
-      "name": "Play Chime Ringtone",
-      "description": "This action always raises a not supported error because the official Protect API has no chime playback route.",
-      "fields": {
-        "chime_id": {
-          "name": "Chime ID",
-          "description": "ID of the chime"
-        },
-        "ringtone_id": {
-          "name": "Ringtone ID",
-          "description": "Kept only so existing automations stay valid. The action raises the same not supported error with or without this field."
         }
       }
     },
@@ -243,6 +244,24 @@
         }
       }
     },
+    "remove_clients": {
+      "name": "Remove Clients",
+      "description": "Remove short-lived, unnamed historical clients from the UniFi Network. Forgets clients that have no name, hostname, or fixed IP and that were seen for 15 minutes or less. If a timestamp is missing, the client is not excluded by the age check. Processes the sites selected in the integration's settings, on consoles that have Network available. Clients with a timestamp that isn't a number are kept. Requires an admin user. Does not remove Home Assistant devices or entities."
+    },
+    "play_chime_ringtone": {
+      "name": "Play Chime Ringtone",
+      "description": "This action always raises a not supported error because the official Protect API has no chime playback route.",
+      "fields": {
+        "chime_id": {
+          "name": "Chime ID",
+          "description": "ID of the chime"
+        },
+        "ringtone_id": {
+          "name": "Ringtone ID",
+          "description": "Kept only so existing automations stay valid. The action raises the same not supported error with or without this field."
+        }
+      }
+    },
     "export_network_rules": {
       "name": "Export network rules",
       "description": "Return a snapshot of the firewall policies, policy-based routes, port forwards, traffic rules, NAT rules and static routes of one console as a versioned document, for comparison, versioning and manual recovery. It is not a complete console backup: the networks, zones, traffic matching lists, groups and VPN definitions that rules refer to are not included, and there is no import. The rules are read from the console when you run the action. Only a rule type with status ok is complete. Failed means the answer could not be read, was not JSON, was incomplete or held a record that could not be parsed. Unsupported means the console refused the request, or the site has no classic name for the five rule types other than firewall policies. Requires an admin user. The action only returns data; it does not write a file.",
@@ -265,9 +284,55 @@
         }
       }
     },
-    "remove_clients": {
-      "name": "Remove Clients",
-      "description": "Remove short-lived, unnamed historical clients from the UniFi Network. Forgets clients that have no name, hostname, or fixed IP and that were seen for 15 minutes or less. If a timestamp is missing, the client is not excluded by the age check. Processes the sites selected in the integration's settings, on consoles that have Network available. Clients with a timestamp that isn't a number are kept. Requires an admin user. Does not remove Home Assistant devices or entities."
+    "set_access_user_pin": {
+      "name": "Set Access user PIN",
+      "description": "Assign a PIN to a UniFi Access user. The PIN must be digits only; the console checks its length and returns a rejection if it does not accept the value. Requires an admin user.",
+      "fields": {
+        "user_id": {
+          "name": "User ID",
+          "description": "The UniFi Access user ID. Letters, digits and hyphens only."
+        },
+        "pin": {
+          "name": "PIN",
+          "description": "Digits only. Not shown in logs or history by this integration."
+        },
+        "console_id": {
+          "name": "Console",
+          "description": "Entry title or entry ID of the UniFi Access console. Required only when more than one Access console is loaded."
+        }
+      }
+    },
+    "remove_access_user_pin": {
+      "name": "Remove Access user PIN",
+      "description": "Remove the PIN assigned to a UniFi Access user. Requires an admin user.",
+      "fields": {
+        "user_id": {
+          "name": "User ID",
+          "description": "The UniFi Access user ID. Letters, digits and hyphens only."
+        },
+        "console_id": {
+          "name": "Console",
+          "description": "Entry title or entry ID of the UniFi Access console. Required only when more than one Access console is loaded."
+        }
+      }
+    },
+    "set_access_user_status": {
+      "name": "Set Access user status",
+      "description": "Set a UniFi Access user account to ACTIVE or DEACTIVATED. This controls the whole account, so a deactivated user loses access through every credential. Requires an admin user.",
+      "fields": {
+        "user_id": {
+          "name": "User ID",
+          "description": "The UniFi Access user ID. Letters, digits and hyphens only."
+        },
+        "status": {
+          "name": "Status",
+          "description": "ACTIVE or DEACTIVATED."
+        },
+        "console_id": {
+          "name": "Console",
+          "description": "Entry title or entry ID of the UniFi Access console. Required only when more than one Access console is loaded."
+        }
+      }
     }
   },
   "entity": {
@@ -711,6 +776,9 @@
       },
       "client_wake": {
         "name": "Wake {client_name}"
+      },
+      "access_door_unlock": {
+        "name": "Unlock"
       }
     },
     "camera": {
@@ -769,6 +837,9 @@
       "traffic_rule_unnamed": {
         "name": "Traffic rule {rule_id}"
       },
+      "wifi": {
+        "name": "WiFi {wifi_name}"
+      },
       "nat_rule": {
         "name": "NAT rule {rule_name}"
       },
@@ -781,8 +852,11 @@
       "static_route_unnamed": {
         "name": "Static route {rule_id}"
       },
-      "wifi": {
-        "name": "WiFi {wifi_name}"
+      "access_emergency_lockdown": {
+        "name": "Lockdown"
+      },
+      "access_emergency_evacuation": {
+        "name": "Evacuation"
       }
     },
     "select": {
@@ -858,6 +932,20 @@
             }
           }
         }
+      },
+      "access_doorbell": {
+        "name": "Doorbell"
+      },
+      "access_result": {
+        "name": "Access result",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "access_granted": "Access granted",
+              "access_denied": "Access denied"
+            }
+          }
+        }
       }
     },
     "update": {
@@ -877,12 +965,19 @@
       "voucher_qr_code": {
         "name": "Latest voucher QR code"
       }
+    },
+    "lock": {
+      "access_door_lock": {
+        "name": "Lock"
+      }
+    },
+    "cover": {
+      "access_gate": {
+        "name": "Gate"
+      }
     }
   },
   "exceptions": {
-    "chime_playback_unsupported": {
-      "message": "You cannot play this chime because the official UniFi Protect API does not support chime playback."
-    },
     "cannot_connect": {
       "message": "Unable to connect to UniFi controller at {host}. Please check the host address and network connectivity."
     },
@@ -979,6 +1074,15 @@
     "legacy_site_not_found": {
       "message": "No verified classic site name found for site {site_id}."
     },
+    "wake_on_lan_unavailable": {
+      "message": "Home Assistant's Wake on LAN service is not available. Check the log for Wake on LAN setup errors, then restart Home Assistant."
+    },
+    "wake_failed": {
+      "message": "Unable to send the Wake-on-LAN packet to {client_name}: {error}"
+    },
+    "chime_playback_unsupported": {
+      "message": "You cannot play this chime because the official UniFi Protect API does not support chime playback."
+    },
     "export_console_required": {
       "message": "More than one UniFi console is configured. Set a console or a site ID."
     },
@@ -997,12 +1101,6 @@
     "export_network_rules_failed": {
       "message": "Unable to read any network rules from the console."
     },
-    "wake_on_lan_unavailable": {
-      "message": "Home Assistant's Wake on LAN service is not available. Check the log for Wake on LAN setup errors, then restart Home Assistant."
-    },
-    "wake_failed": {
-      "message": "Unable to send the Wake-on-LAN packet to {client_name}: {error}"
-    },
     "network_rule_not_found": {
       "message": "Unable to update {rule_type} {rule_name}: it no longer exists on the console."
     },
@@ -1011,6 +1109,75 @@
     },
     "network_rule_update_failed": {
       "message": "Unable to update {rule_type} {rule_name}."
+    },
+    "access_auth_failed": {
+      "message": "The UniFi Access token was rejected. Replace it in the integration's reconfigure settings."
+    },
+    "access_unreachable": {
+      "message": "UniFi Access could not be reached. Try again shortly."
+    },
+    "permission_denied": {
+      "message": "The UniFi Access token does not have permission for this action."
+    },
+    "door_not_bound": {
+      "message": "This door is not bound to an Access hub, so it cannot be unlocked remotely."
+    },
+    "door_not_lockable": {
+      "message": "This door is controlled as a gate and has no lock."
+    },
+    "lock_rule_unsupported": {
+      "message": "This UniFi Access version does not support door lock rules (Access 1.24.6 or later is required)."
+    },
+    "lock_failed": {
+      "message": "UniFi Access did not lock the door."
+    },
+    "unlock_failed": {
+      "message": "UniFi Access did not unlock the door."
+    },
+    "gate_command_invalid": {
+      "message": "The gate command must be open, close or stop."
+    },
+    "gate_command_unsupported": {
+      "message": "This door is not linked to a UA Hub Gate, so gate commands are refused."
+    },
+    "gate_command_rejected": {
+      "message": "UniFi Access rejected the gate command. Gate control needs UniFi Access 4.2.16 or later with the gate in three-button mode."
+    },
+    "emergency_state_unknown": {
+      "message": "UniFi Access has not reported its emergency state, so the mode cannot be changed safely."
+    },
+    "emergency_failed": {
+      "message": "UniFi Access did not change the emergency mode."
+    },
+    "emergency_not_applied": {
+      "message": "UniFi Access did not apply the emergency mode it was given. The console state is shown instead."
+    },
+    "pin_invalid_format": {
+      "message": "The PIN must contain digits only."
+    },
+    "pin_rejected": {
+      "message": "UniFi Access rejected the PIN because its length does not meet the console's requirements."
+    },
+    "pin_assign_failed": {
+      "message": "UniFi Access did not assign the PIN to the user."
+    },
+    "pin_remove_failed": {
+      "message": "UniFi Access did not remove the user's PIN."
+    },
+    "status_invalid": {
+      "message": "The user status must be ACTIVE or DEACTIVATED."
+    },
+    "status_update_failed": {
+      "message": "UniFi Access did not update the user's status."
+    },
+    "access_user_not_found": {
+      "message": "No UniFi Access user matches that user ID."
+    },
+    "access_not_configured": {
+      "message": "No UniFi Access console is loaded. Add an Access token to a local UniFi Insights entry first."
+    },
+    "access_console_required": {
+      "message": "More than one UniFi Access console is loaded. Set the console to use."
     }
   }
 }

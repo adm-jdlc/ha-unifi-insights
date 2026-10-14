@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for port forward and traffic rule switches."""
 
 from __future__ import annotations

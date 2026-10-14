@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Constants for the UniFi Insights integration."""
 
 from datetime import timedelta
@@ -97,6 +98,37 @@ DEFAULT_TRACK_SUBSCRIBERS: Final = False
 DEFAULT_CARRIER_ACTIONS: Final = False
 
 DEFAULT_API_HOST = "https://192.168.10.1"
+
+# UniFi Access: optional application on a local entry, with its own bearer
+# token. The official API PDF documents the developer API on port 12445.
+CONF_ACCESS_TOKEN: Final = "access_token"  # noqa: S105 - config key name, not a secret
+CONF_ACCESS_PORT: Final = "access_port"
+CONF_ACCESS_WEBHOOK: Final = "access_webhook"
+CONF_CLEAR_ACCESS_TOKEN: Final = "clear_access_token"  # noqa: S105 - config key name, not a secret
+DEFAULT_ACCESS_PORT: Final = 12445
+DEFAULT_ACCESS_WEBHOOK: Final = False
+# Webhook state lives in entry.data: the Home Assistant receiver ID, the Access
+# endpoint ID and the endpoint's signing secret returned by the console.
+CONF_ACCESS_WEBHOOK_ID: Final = "access_webhook_id"
+CONF_ACCESS_WEBHOOK_ENDPOINT_ID: Final = "access_webhook_endpoint_id"
+CONF_ACCESS_WEBHOOK_SECRET: Final = "access_webhook_secret"  # noqa: S105 - config key name, not a secret
+ACCESS_WEBHOOK_EVENT: Final = "access.door.unlock"
+ACCESS_CONFIG_KEYS: Final = (
+    CONF_ACCESS_TOKEN,
+    CONF_ACCESS_PORT,
+    CONF_ACCESS_WEBHOOK_ID,
+    CONF_ACCESS_WEBHOOK_ENDPOINT_ID,
+    CONF_ACCESS_WEBHOOK_SECRET,
+)
+# Access has no version endpoint in the official API, so these minimums are
+# checked against the Access application version the user reports, and each
+# feature is also detected by its own endpoint response.
+ACCESS_MIN_VERSION_NOTIFICATIONS: Final = (1, 20, 11)
+ACCESS_MIN_VERSION_EMERGENCY_LOCK_RULES: Final = (1, 24, 6)
+ACCESS_MIN_VERSION_WEBHOOKS: Final = (2, 2, 10)
+# Access state is polled and refreshed after each command. Door lock state
+# changes outside Home Assistant, so the poll is the authoritative fallback.
+SCAN_INTERVAL_ACCESS = timedelta(seconds=30)
 
 # Scan intervals for multi-coordinator architecture (Platinum compliance)
 # Device coordinator - fast updates for status, stats (30 seconds)

@@ -2303,48 +2303,54 @@ def test_models_dns_policy_branches() -> None:
 
 def test_models_acl_branches() -> None:
     """ACLRule and related models cover is_user_defined, filters, and fields."""
-    r_no_meta = ACLRule(
-        id="r-1",
-        type=ACLRuleType.IPV4,
-        name="Rule 1",
-        action=ACLAction.BLOCK,
-        index=0,
-        metadata=None,
+    r_no_meta = ACLRule.model_validate(
+        {
+            "id": "r-1",
+            "type": ACLRuleType.IPV4,
+            "name": "Rule 1",
+            "action": ACLAction.BLOCK,
+            "index": 0,
+            "metadata": None,
+        }
     )
     assert r_no_meta.is_user_defined is True
 
-    r_user = ACLRule(
-        id="r-2",
-        type=ACLRuleType.MAC,
-        name="Rule 2",
-        action=ACLAction.ALLOW,
-        index=1,
-        metadata=ACLMetadata(origin=ACLMetadataOrigin.USER_DEFINED),
-        enforcingDeviceFilter=ACLDeviceFilter(deviceIds=["dev-1"]),
-        sourceFilter=ACLSourceFilter(
-            networkIds=["net-1"],
-            macAddresses=["aa:bb:cc:dd:ee:ff"],
-            ipAddresses=["192.168.1.10"],
-            portRanges=["80-443"],
-        ),
-        destinationFilter=ACLDestinationFilter(
-            networkIds=["net-2"],
-            macAddresses=["11:22:33:44:55:66"],
-            ipAddresses=["10.0.0.1"],
-            portRanges=["22"],
-        ),
+    r_user = ACLRule.model_validate(
+        {
+            "id": "r-2",
+            "type": ACLRuleType.MAC,
+            "name": "Rule 2",
+            "action": ACLAction.ALLOW,
+            "index": 1,
+            "metadata": ACLMetadata(origin=ACLMetadataOrigin.USER_DEFINED),
+            "enforcingDeviceFilter": ACLDeviceFilter(deviceIds=["dev-1"]),
+            "sourceFilter": ACLSourceFilter(
+                networkIds=["net-1"],
+                macAddresses=["aa:bb:cc:dd:ee:ff"],
+                ipAddresses=["192.168.1.10"],
+                portRanges=["80-443"],
+            ),
+            "destinationFilter": ACLDestinationFilter(
+                networkIds=["net-2"],
+                macAddresses=["11:22:33:44:55:66"],
+                ipAddresses=["10.0.0.1"],
+                portRanges=["22"],
+            ),
+        }
     )
     assert r_user.is_user_defined is True
     assert r_user.enforcing_device_filter.device_ids == ["dev-1"]
     assert r_user.source_filter.port_ranges == ["80-443"]
 
-    r_sys = ACLRule(
-        id="r-3",
-        type=ACLRuleType.IPV4,
-        name="Rule 3",
-        action=ACLAction.BLOCK,
-        index=2,
-        metadata=ACLMetadata(origin=ACLMetadataOrigin.SYSTEM_DEFINED),
+    r_sys = ACLRule.model_validate(
+        {
+            "id": "r-3",
+            "type": ACLRuleType.IPV4,
+            "name": "Rule 3",
+            "action": ACLAction.BLOCK,
+            "index": 2,
+            "metadata": ACLMetadata(origin=ACLMetadataOrigin.SYSTEM_DEFINED),
+        }
     )
     assert r_sys.is_user_defined is False
 
@@ -2354,29 +2360,35 @@ def test_models_acl_branches() -> None:
 
 def test_models_traffic_branches() -> None:
     """TrafficMatchingList and DPI models cover is_user_defined and fields."""
-    t_no_meta = TrafficMatchingList(
-        id="t-1",
-        type=TrafficMatchingType.PORTS,
-        name="Ports",
-        metadata=None,
+    t_no_meta = TrafficMatchingList.model_validate(
+        {
+            "id": "t-1",
+            "type": TrafficMatchingType.PORTS,
+            "name": "Ports",
+            "metadata": None,
+        }
     )
     assert t_no_meta.is_user_defined is True
 
-    t_user = TrafficMatchingList(
-        id="t-2",
-        type=TrafficMatchingType.IPV4_ADDRESSES,
-        name="IPs",
-        entries=["1.2.3.4"],
-        metadata=TrafficMetadata(origin=TrafficMetadataOrigin.USER_DEFINED),
+    t_user = TrafficMatchingList.model_validate(
+        {
+            "id": "t-2",
+            "type": TrafficMatchingType.IPV4_ADDRESSES,
+            "name": "IPs",
+            "entries": ["1.2.3.4"],
+            "metadata": TrafficMetadata(origin=TrafficMetadataOrigin.USER_DEFINED),
+        }
     )
     assert t_user.is_user_defined is True
     assert t_user.entries == ["1.2.3.4"]
 
-    t_sys = TrafficMatchingList(
-        id="t-3",
-        type=TrafficMatchingType.PORTS,
-        name="Domains",
-        metadata=TrafficMetadata(origin=TrafficMetadataOrigin.SYSTEM_DEFINED),
+    t_sys = TrafficMatchingList.model_validate(
+        {
+            "id": "t-3",
+            "type": TrafficMatchingType.PORTS,
+            "name": "Domains",
+            "metadata": TrafficMetadata(origin=TrafficMetadataOrigin.SYSTEM_DEFINED),
+        }
     )
     assert t_sys.is_user_defined is False
 

@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """
 Data transformation functions for vendored UniFi API responses.
 

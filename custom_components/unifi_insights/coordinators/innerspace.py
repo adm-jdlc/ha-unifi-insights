@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """InnerSpace coordinator for UniFi Insights floor-plan and inventory data."""
 
 from __future__ import annotations

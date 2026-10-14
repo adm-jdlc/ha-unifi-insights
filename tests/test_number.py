@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for UniFi Protect number platform."""
 
 from __future__ import annotations
@@ -1010,7 +1011,7 @@ class TestVoucherNumbers:
         ],
     )
     def test_voucher_number_metadata(
-        self, voucher_coordinator, key: str, unit, dev_class, min_v, max_v, step
+        self, voucher_coordinator, key: str, unit, dev_class, *, min_v, max_v, step
     ) -> None:
         """Test metadata and bounds for each voucher number entity."""
         desc = next(d for d in VOUCHER_NUMBER_DESCRIPTIONS if d.key == key)

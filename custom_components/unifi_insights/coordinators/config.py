@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Config coordinator for UniFi Insights - handles slow-changing configuration data."""
 
 from __future__ import annotations
@@ -429,7 +430,7 @@ class UnifiConfigCoordinator(UnifiBaseCoordinator):
                             site_id,
                             rule_site_name,
                             fetch,
-                            failed_sections,
+                            failed_sections=failed_sections,
                             outcomes=section_outcomes,
                         )
                         for section, fetch in zip(

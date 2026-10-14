@@ -10,7 +10,7 @@
 [![License](https://img.shields.io/github/license/tinkerologie/ha-unifi-insights)](./LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/tinkerologie/ha-unifi-insights)
 
-Monitor and control your UniFi system from Home Assistant: UniFi Network, UniFi Protect, UniFi InnerSpace, UniFi Mobility, UniFi Site Manager and UniFi Carrier Fabric, in one integration.
+Monitor and control your UniFi system from Home Assistant: UniFi Network, UniFi Protect, UniFi Access, UniFi InnerSpace, UniFi Mobility, UniFi Site Manager and UniFi Carrier Fabric, in one integration.
 
 ## Contents
 
@@ -19,7 +19,7 @@ Monitor and control your UniFi system from Home Assistant: UniFi Network, UniFi 
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Configuration](#configuration)
-- Products: [Network](#unifi-network), [Protect](#unifi-protect), [InnerSpace](#unifi-innerspace), [Mobility](#unifi-mobility), [Site Manager](#unifi-site-manager), [Carrier Fabric (ISP)](#unifi-carrier-fabric-isp)
+- Products: [Network](#unifi-network), [Protect](#unifi-protect), [Access](#unifi-access), [InnerSpace](#unifi-innerspace), [Mobility](#unifi-mobility), [Site Manager](#unifi-site-manager), [Carrier Fabric (ISP)](#unifi-carrier-fabric-isp)
 - [Dashboard cards](#dashboard-cards)
 - [Troubleshooting](#troubleshooting)
 
@@ -27,7 +27,7 @@ Monitor and control your UniFi system from Home Assistant: UniFi Network, UniFi 
 
 UniFi Insights is a custom integration that you install from HACS. It connects with an API key, not a user name and password. It mainly uses the official UniFi APIs that Ubiquiti publishes at [developer.ui.com](https://developer.ui.com/). For some UniFi Network features that the official API doesn't cover yet, such as Wi-Fi QR codes, VPN, route, port forward, traffic rule, NAT rule and static route switches, and internet traffic history, it uses the console's classic Network endpoints with the same API key.
 
-- **One integration for your UniFi system.** One console entry covers that console's Network, Protect and InnerSpace applications. A cloud API key adds Mobility and Site Manager data. ISPs can add a Carrier Fabric entry.
+- **One integration for your UniFi system.** One console entry covers that console's Network, Protect and InnerSpace applications. Local entries can also connect to Access using its separate token. A cloud API key adds Mobility and Site Manager data. ISPs can add a Carrier Fabric entry.
 - **API key setup, local or remote.** Connect to a console on your network, or choose any console on your UniFi account through UniFi Cloud. You don't need a local user account.
 - **Standard Home Assistant entities.** Sensors, binary sensors, switches, buttons, cameras, events, lights, selects, numbers, images, device trackers and update entities, grouped under their UniFi devices.
 - **Actions** for tasks that are not entities, such as guest authorization, hotspot vouchers, PTZ moves and Protect live views.
@@ -36,14 +36,15 @@ UniFi Insights is a custom integration that you install from HACS. It connects w
 
 ## Supported UniFi products
 
-| Product                                                 | Connection           | Highlights                                                                                                                       |
-| ------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| [UniFi Network](#unifi-network)                         | Local or Remote      | Device, port, power, WAN and client monitoring; Wi-Fi, firewall, route, VPN and client controls; guest access and vouchers       |
-| [UniFi Protect](#unifi-protect)                         | Local or Remote      | Cameras, smart detection and doorbell events, lights, chimes, sirens, PTZ, sensors, NVR storage, Alarm Manager, alarm hub status |
-| [UniFi InnerSpace](#unifi-innerspace)                   | Local or Remote      | Floor-plan placement of your UniFi devices                                                                                       |
-| [UniFi Mobility](#unifi-mobility)                       | Remote               | Mobile router status, cellular data use and GPS location                                                                         |
-| [UniFi Site Manager](#unifi-site-manager)               | Remote               | Account-wide host, site, ISP and SD-WAN data in diagnostics                                                                      |
-| [UniFi Carrier Fabric (ISP)](#unifi-carrier-fabric-isp) | Carrier Fabric (ISP) | Subscriber and service plan counts, with optional suspend and resume                                                             |
+| Product                                                 | Connection            | Highlights                                                                                                                          |
+| ------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| [UniFi Network](#unifi-network)                         | Local or Remote       | Device, port, power, WAN and client monitoring; Wi-Fi, firewall, route, VPN and client controls; guest access and vouchers          |
+| [UniFi Protect](#unifi-protect)                         | Local or Remote       | Cameras, smart detection and doorbell events, lights, chimes, sirens, PTZ, sensors, NVR storage, Alarm Manager, alarm hub status    |
+| [UniFi Access](#unifi-access)                           | Local, optional token | Door locks and unlock buttons, Gate Hub covers, emergency controls, doorbell and signed access-result events, administrator actions |
+| [UniFi InnerSpace](#unifi-innerspace)                   | Local or Remote       | Floor-plan placement of your UniFi devices                                                                                          |
+| [UniFi Mobility](#unifi-mobility)                       | Remote                | Mobile router status, cellular data use and GPS location                                                                            |
+| [UniFi Site Manager](#unifi-site-manager)               | Remote                | Account-wide host, site, ISP and SD-WAN data in diagnostics                                                                         |
+| [UniFi Carrier Fabric (ISP)](#unifi-carrier-fabric-isp) | Carrier Fabric (ISP)  | Subscriber and service plan counts, with optional suspend and resume                                                                |
 
 The integration only creates entities for the applications your console runs. A console with only Network, only Protect or only InnerSpace works.
 
@@ -464,6 +465,104 @@ data:
     entity_id:
       - binary_sensor.front_doorbell_doorbell_ring
 ```
+
+## UniFi Access
+
+Access is an optional application on an existing **Local** console entry. The
+console must also provide Network, Protect or InnerSpace for onboarding.
+
+### Access setup
+
+1. In the Access application, open **Settings → General → Advanced → API Token**
+   and create a token.
+2. Grant `view:space` for door state and `edit:space` for door, gate and emergency
+   controls. Add `view:device` for device discovery and doorbell notifications,
+   `edit:user` for user actions, and `view:webhook` and `edit:webhook` for access-result
+   events.
+3. In Home Assistant, reconfigure your Local UniFi Insights entry and enter the
+   **Access token** and **Access port**. The default port is **12445**. This is
+   separate from the Network/Protect API key and uses the same console host and
+   SSL verification setting. Use the port specified by your console's Access API
+   reference; some UniFi documentation calls port **12455** “OpenAPI”, but the
+   reference used for this integration documents **12445**.
+4. Save. To remove Access, select **Remove the Access token** during
+   reconfiguration. Leaving the token field empty keeps the stored token.
+
+Access needs version **1.20.11+** for doorbell notifications, **1.24.6+** for lock
+rules and emergency settings, and **2.2.10+** for webhooks. Gate motor commands
+require **4.2.16+** and a **UA Hub Gate in three-button mode**, as documented by
+current community Access SDKs. These gate contracts have not
+been verified on gate hardware for this change. Only hubs reported as `UGT` with
+an exact door location link get a cover; other types retain ordinary door controls.
+Verify the reported hub type and linkage before automating gate operations.
+Gate close and stop controls are exposed only for recognized UA Hub Gate devices.
+If your token lacks permission for a feature, that feature becomes unavailable.
+Door and gate controls also require device-read permission.
+An expired Access token affects Access entities; replace it through reconfiguration.
+If Access is unavailable during startup, reload the entry after connectivity is
+restored to enable its entities.
+
+### Access entities and actions
+
+- **Door locks** read the lock relay. **Unlock buttons** are available for doors
+  bound to an Access hub. The lock action sends the `reset` temporary lock rule:
+  it restores the door's configured rule and does not override an active unlock
+  schedule. It does not enable emergency lockdown. Access Enterprise hubs that
+  do not support temporary lock rules reject this action.
+  Locks also expose relay data for unbound doors; remote unlock is refused until
+  a hub is bound. Unlock buttons are only created for bound doors.
+- **Gate Hub covers** offer open, close and stop. Their position comes from the
+  physical position sensor, separately from the lock relay. An absent or unknown
+  sensor reports unknown position.
+- **Lockdown** keeps doors locked; **Evacuation** keeps doors unlocked. Enabling
+  either disables the other. State is read back from Access after each action.
+- **Doorbell events** arrive through Access notifications. **Access granted** and
+  **Access denied** events require the optional webhook below.
+
+The following actions require a Home Assistant administrator. Supply `user_id`
+from Access; when more than one Access console is configured, also supply
+`console_id` using the integration entry ID or title.
+
+| Action                                  | Description                                                                   |
+| --------------------------------------- | ----------------------------------------------------------------------------- |
+| `unifi_insights.set_access_user_pin`    | Assign a digits-only PIN; Access validates its configured length requirements |
+| `unifi_insights.remove_access_user_pin` | Remove a user's assigned PIN                                                  |
+| `unifi_insights.set_access_user_status` | Set the user account to `ACTIVE` or `DEACTIVATED`                             |
+
+User status controls the entire user's access, rather than one credential.
+Deactivation is reversible and does not delete NFC credentials.
+
+### Access-result webhooks
+
+Enable **Access-result events** in the entry's options to register a signed
+`access.door.unlock` webhook. The console must be able to reach Home Assistant's
+internal URL. The receiver accepts local POST requests, verifies the signature
+and timestamp, and rejects repeated deliveries across entry reloads. The replay
+cache is held in memory and resets when Home Assistant restarts; the signature's
+timestamp window still applies. Without a reachable URL, sufficient token
+permissions and a returned signing secret, access-result events remain unavailable.
+Doorbell notifications continue independently.
+
+Reloading the entry preserves its remote webhook registration. Disabling the
+option or removing the entry deletes that registration when Access is reachable.
+If the option is disabled while Access is offline, the receiver is retired and
+the endpoint metadata is kept so a later entry reload can retry deletion.
+If Access is offline when removing the entry, clearing its token or changing its
+host/port, delete the remaining endpoint in Access. The old receiver is retired;
+the integration does not retain obsolete credentials to retry that cleanup.
+If Access accepts a webhook registration but returns an unusable response,
+remove the orphaned endpoint in Access before retrying setup.
+Tokens, PINs, signing secrets and credential values are excluded from diagnostics
+and event attributes.
+
+Home Assistant handles service-call inputs before this integration receives them.
+A PIN supplied in a script or automation can appear in its trace, and service-call
+events can reach Recorder or other event listeners. Home Assistant's core debug
+logging also records service inputs, so do not enable `homeassistant.core` DEBUG
+when invoking PIN actions. Avoid storing a reusable PIN in automation YAML;
+protect access to Home Assistant's traces, logs and database. Supply PINs as
+strings, and quote them in YAML (for example, `pin: "0123"`) to preserve leading
+zeros. Numeric inputs are rejected.
 
 ## UniFi InnerSpace
 

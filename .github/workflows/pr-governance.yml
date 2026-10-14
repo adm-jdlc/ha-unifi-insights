@@ -110,7 +110,8 @@ jobs:
               const governanceUnchecked = getUncheckedItems(sections["Pre-Submission Governance"]);
               if (governanceUnchecked.length > 0) {
                 errors.push(
-                  `All items in "Pre-Submission Governance" must be checked to confirm the change was tested locally and is not spam. Unchecked: ${governanceUnchecked.join("; ")}.`,
+                  'All items in "Pre-Submission Governance" must be checked to confirm ' +
+                    `the change was tested locally and is not spam. Unchecked: ${governanceUnchecked.join("; ")}.`,
                 );
               }
               if (getCheckedItems(sections["Pre-Submission Governance"]).length === 0) {
@@ -246,23 +247,32 @@ jobs:
             }
             if (isExplicitNone && permissionLookupError) {
               errors.push(
-                `Could not confirm that the author may use "None" (GitHub API error: ${permissionLookupError.message}). Re-run this check, or link an issue in "Related Issues".`,
+                `Could not confirm that the author may use "None" (GitHub API error: ${permissionLookupError.message}). ` +
+                  'Re-run this check, or link an issue in "Related Issues".',
               );
             } else if (isExplicitNone && !isMaintainer) {
               errors.push(
-                'Contributor PRs must link an issue in "Related Issues", for example `Closes #123` or `Part of #123`. "None" is reserved for maintainers with write access, for housekeeping; open an issue with the bug or enhancement template first.',
+                'Contributor PRs must link an issue in "Related Issues", for example `Closes #123` or `Part of #123`. ' +
+                  '"None" is reserved for maintainers with write access, for housekeeping; ' +
+                  'open an issue with the bug or enhancement template first.',
               );
             }
 
             if (!isExplicitNone && relatedIssuesClean) {
-              const issueRefRegex =
-                /\b(?:part of|fix(?:e[sd])?|close[sd]?|resolve[sd]?|related to|addresses?|implements?)[:]??\s+(?:https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/(\d+)|([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#(\d+))/gi;
+              const issueRefRegex = new RegExp(
+                String.raw`\b(?:part of|fix(?:e[sd])?|close[sd]?|resolve[sd]?|related to|addresses?|implements?)[:]??\s+` +
+                  String.raw`(?:https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/(\d+)` +
+                  String.raw`|([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#(\d+))`,
+                "gi",
+              );
 
               const issueMatches = [...relatedIssuesClean.matchAll(issueRefRegex)];
 
               if (issueMatches.length === 0) {
                 errors.push(
-                  "Add at least one linked issue in \"Related Issues\" using Fixes/Closes/Resolves/Related to/Part of #<number> (or issue URL), or state \"None\" if this change is self-contained.",
+                  'Add at least one linked issue in "Related Issues" using ' +
+                    'Fixes/Closes/Resolves/Related to/Part of #<number> (or issue URL), ' +
+                    'or state "None" if this change is self-contained.',
                 );
               } else {
                 const repoSlug = `${owner}/${repo}`.toLowerCase();

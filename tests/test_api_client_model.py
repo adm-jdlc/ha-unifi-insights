@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for vendored UniFi API client model parsing."""
 
 import pytest

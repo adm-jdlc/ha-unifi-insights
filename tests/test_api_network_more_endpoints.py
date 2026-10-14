@@ -1512,7 +1512,7 @@ async def test_voucher_endpoints_omit_response_bodies(
         else:
             await endpoint(*args, **kwargs)
     assert "1234567890" not in caplog.text
-    assert "Caf" not in caplog.text
+    assert "Caf" not in caplog.text  # codespell:ignore caf
     assert (
         f"<body omitted, {len((await response.text()).encode())} bytes>" in caplog.text
     )

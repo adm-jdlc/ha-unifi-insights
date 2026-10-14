@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Services for the UniFi Insights integration."""
 
 from __future__ import annotations
@@ -9,7 +10,6 @@ import uuid
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Final, NoReturn
 
-import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -28,7 +28,12 @@ from homeassistant.helpers.target import (
     async_extract_referenced_entity_ids,
 )
 
-from .api import UniFiAuthenticationError, UniFiError
+from .api import (
+    UniFiAuthenticationError,
+    UniFiError,
+    UniFiNotFoundError,
+    UniFiResponseError,
+)
 from .api.network.models.client import ClientType
 from .button import get_device_port, port_can_be_power_cycled
 from .carrier_fabric_data import CarrierFabricData
@@ -81,7 +86,17 @@ from .diagnostics import redact_network_rule_export
 from .helpers import is_doorbell_camera_model
 from .led_level import percent_to_led_level
 
+# Schemas are typed against probatio, the library HA 2026.10 annotates its schema
+# arguments with. Runtime still imports voluptuous: HA 2026.10 aliases it to probatio,
+# and the 2026.6 minimum ships real voluptuous, so only the type checker sees probatio.
 if TYPE_CHECKING:
+    import probatio as vol
+else:
+    import voluptuous as vol
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse
 
 
@@ -2085,6 +2100,93 @@ async def _async_handle_export_network_rules(
     return document
 
 
+SERVICE_SET_ACCESS_USER_PIN: Final = "set_access_user_pin"
+SERVICE_REMOVE_ACCESS_USER_PIN: Final = "remove_access_user_pin"
+SERVICE_SET_ACCESS_USER_STATUS: Final = "set_access_user_status"
+
+# Access user IDs become URL path segments, so only the characters the console
+# issues are accepted. PIN digits and length are not checked here: the console
+# owns that contract and the coordinator reports its answer.
+_ACCESS_USER_ID = vol.All(cv.string, vol.Match(r"^[0-9A-Za-z-]{1,64}$"))
+
+SET_ACCESS_USER_PIN_SCHEMA = vol.Schema(
+    {
+        vol.Required("user_id"): _ACCESS_USER_ID,
+        # Reject YAML/JSON numbers rather than silently changing a credential.
+        vol.Required("pin"): str,
+        vol.Optional("console_id"): cv.string,
+    }
+)
+
+REMOVE_ACCESS_USER_PIN_SCHEMA = vol.Schema(
+    {
+        vol.Required("user_id"): _ACCESS_USER_ID,
+        vol.Optional("console_id"): cv.string,
+    }
+)
+
+SET_ACCESS_USER_STATUS_SCHEMA = vol.Schema(
+    {
+        vol.Required("user_id"): _ACCESS_USER_ID,
+        vol.Required("status"): vol.In(("ACTIVE", "DEACTIVATED")),
+        vol.Optional("console_id"): cv.string,
+    }
+)
+
+
+def _access_coordinator_of(entry: Any) -> Any:
+    """Return an entry's Access coordinator, or None when Access is not loaded."""
+    runtime_data = getattr(entry, "runtime_data", None)
+    return getattr(runtime_data, "access_coordinator", None)
+
+
+def _get_access_coordinator(hass: HomeAssistant, *, console_id: str | None) -> Any:
+    """Route an Access user action to the one console that owns it."""
+    entries = [
+        entry
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if _access_coordinator_of(entry) is not None
+    ]
+    if not entries:
+        msg = "No UniFi Access console is loaded"
+        raise ServiceValidationError(
+            msg,
+            translation_domain=DOMAIN,
+            translation_key="access_not_configured",
+        )
+    if console_id:
+        return _access_coordinator_of(
+            _select_console(entries, console_id, "UniFi Access console")
+        )
+    if len(entries) > 1:
+        msg = "Multiple UniFi Access consoles are loaded; set 'console_id'"
+        raise ServiceValidationError(
+            msg,
+            translation_domain=DOMAIN,
+            translation_key="access_console_required",
+        )
+    return _access_coordinator_of(entries[0])
+
+
+async def _async_run_access_user_action(action: Awaitable[None]) -> None:
+    """Run a coordinator user action and report an unknown user as validation."""
+    try:
+        await action
+    except HomeAssistantError as err:
+        cause = err.__cause__
+        if isinstance(cause, UniFiResponseError) and (
+            isinstance(cause, UniFiNotFoundError)
+            or cause.status_code == HTTPStatus.NOT_FOUND
+        ):
+            msg = "No UniFi Access user matches that user ID"
+            raise ServiceValidationError(
+                msg,
+                translation_domain=DOMAIN,
+                translation_key="access_user_not_found",
+            ) from err
+        raise
+
+
 async def async_setup_services(hass: HomeAssistant) -> None:
     """Set up the UniFi Insights services."""
     _LOGGER.debug("Setting up UniFi Insights services")
@@ -2241,7 +2343,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_POWER_CYCLE_PORT,
         async_handle_power_cycle_port,
-        schema=POWER_CYCLE_PORT_SCHEMA,  # type: ignore[arg-type]
+        schema=POWER_CYCLE_PORT_SCHEMA,
     )
 
     hass.services.async_register(
@@ -2661,7 +2763,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_RECONNECT_CLIENT,
         async_handle_reconnect_client,
-        schema=RECONNECT_CLIENT_SCHEMA,  # type: ignore[arg-type]
+        schema=RECONNECT_CLIENT_SCHEMA,
     )
 
     async_register_admin_service(
@@ -2669,7 +2771,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_REMOVE_CLIENTS,
         async_handle_remove_clients,
-        schema=REMOVE_CLIENTS_SCHEMA,  # type: ignore[arg-type]
+        schema=REMOVE_CLIENTS_SCHEMA,
     )
 
     hass.services.async_register(
@@ -2695,7 +2797,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_EXPORT_NETWORK_RULES,
         async_handle_export_network_rules,
-        schema=EXPORT_NETWORK_RULES_SCHEMA,  # type: ignore[arg-type]
+        schema=EXPORT_NETWORK_RULES_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
 
@@ -2739,6 +2841,60 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_CARRIER_RESUME_SUBSCRIBER,
         async_handle_carrier_resume_subscriber,
         schema=CARRIER_RESUME_SUBSCRIBER_SCHEMA,
+    )
+
+    # Admin-only: a PIN is a credential, so non-admin callers are refused by HA.
+    async def async_handle_set_access_user_pin(call: ServiceCall) -> None:
+        """Assign a user-chosen PIN through the console that owns the user."""
+        access_coordinator = _get_access_coordinator(
+            hass, console_id=call.data.get("console_id")
+        )
+        await _async_run_access_user_action(
+            access_coordinator.async_set_user_pin(
+                call.data["user_id"], call.data["pin"]
+            )
+        )
+
+    async def async_handle_remove_access_user_pin(call: ServiceCall) -> None:
+        """Remove a user's PIN through the console that owns the user."""
+        access_coordinator = _get_access_coordinator(
+            hass, console_id=call.data.get("console_id")
+        )
+        await _async_run_access_user_action(
+            access_coordinator.async_remove_user_pin(call.data["user_id"])
+        )
+
+    async def async_handle_set_access_user_status(call: ServiceCall) -> None:
+        """Set a user account to ACTIVE or DEACTIVATED; this is account-wide."""
+        access_coordinator = _get_access_coordinator(
+            hass, console_id=call.data.get("console_id")
+        )
+        await _async_run_access_user_action(
+            access_coordinator.async_set_user_status(
+                call.data["user_id"], call.data["status"]
+            )
+        )
+
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        SERVICE_SET_ACCESS_USER_PIN,
+        async_handle_set_access_user_pin,
+        schema=SET_ACCESS_USER_PIN_SCHEMA,
+    )
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        SERVICE_REMOVE_ACCESS_USER_PIN,
+        async_handle_remove_access_user_pin,
+        schema=REMOVE_ACCESS_USER_PIN_SCHEMA,
+    )
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        SERVICE_SET_ACCESS_USER_STATUS,
+        async_handle_set_access_user_status,
+        schema=SET_ACCESS_USER_STATUS_SCHEMA,
     )
 
     _LOGGER.info("UniFi Insights services registered successfully")
@@ -2829,5 +2985,14 @@ async def async_unload_services(hass: HomeAssistant) -> None:
 
     if hass.services.has_service(DOMAIN, SERVICE_CARRIER_RESUME_SUBSCRIBER):
         hass.services.async_remove(DOMAIN, SERVICE_CARRIER_RESUME_SUBSCRIBER)
+
+    # Unload UniFi Access user services
+    for service in (
+        SERVICE_SET_ACCESS_USER_PIN,
+        SERVICE_REMOVE_ACCESS_USER_PIN,
+        SERVICE_SET_ACCESS_USER_STATUS,
+    ):
+        if hass.services.has_service(DOMAIN, service):
+            hass.services.async_remove(DOMAIN, service)
 
     _LOGGER.info("UniFi Insights services unloaded successfully")

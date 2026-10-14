@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Multi-coordinator architecture for UniFi Insights (Platinum compliance)."""
 
 from __future__ import annotations

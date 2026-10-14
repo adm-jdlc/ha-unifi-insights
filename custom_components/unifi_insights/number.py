@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Support for UniFi Protect number entities."""
 
 from __future__ import annotations
@@ -527,7 +528,7 @@ def _async_setup_voucher_numbers(
                 if key in known:
                     continue
                 unique_id = async_migrate_site_entity(
-                    hass, entry, "number", namespace, site_id, description.key
+                    hass, entry, "number", namespace, site_id, suffix=description.key
                 )
                 if unique_id is None:
                     continue

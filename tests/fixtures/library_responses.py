@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Sample library response data for testing."""
 
 # Network API responses

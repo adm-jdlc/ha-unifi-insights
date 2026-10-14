@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Real-registry regressions for console-scoped logical-site identities."""
 
 from __future__ import annotations
@@ -137,7 +138,7 @@ def test_namespace_uses_only_stored_console(hass):
     ],
 )
 async def test_all_families_migrate_preserving_metadata(
-    hass, entity_registry, device_registry, area_registry, domain, key
+    hass, entity_registry, device_registry, area_registry, domain, *, key
 ):
     """
     Migrate every logical family while retaining native identity and customizations.
@@ -159,7 +160,9 @@ async def test_all_families_migrate_preserving_metadata(
     before = attr.asdict(row)
     target = build_site_unique_id("console_a", "site_shared", key)
     assert (
-        async_migrate_site_entity(hass, entry, domain, "console_a", "site_shared", key)
+        async_migrate_site_entity(
+            hass, entry, domain, "console_a", "site_shared", suffix=key
+        )
         == target
     )
     after = attr.asdict(entity_registry.async_get(row.entity_id))
@@ -173,7 +176,9 @@ async def test_all_families_migrate_preserving_metadata(
         if k not in {"unique_id", "previous_unique_id", "modified_at"}
     }
     assert (
-        async_migrate_site_entity(hass, entry, domain, "console_a", "site_shared", key)
+        async_migrate_site_entity(
+            hass, entry, domain, "console_a", "site_shared", suffix=key
+        )
         == target
     )
     assert attr.asdict(entity_registry.async_get(row.entity_id)) == after
@@ -198,7 +203,7 @@ async def test_owned_legacy_priority_over_occupied_target(
     )
     assert (
         async_migrate_site_entity(
-            hass, entry, "sensor", "console_a", "site_shared", key
+            hass, entry, "sensor", "console_a", "site_shared", suffix=key
         )
         == legacy.unique_id
     )
@@ -224,12 +229,14 @@ async def test_foreign_rows_missing_namespace_and_occupied_target(
     key = "site_total_clients"
     legacy = _row(entity_registry, other, "sensor", "site_shared_" + key, key)
     assert (
-        async_migrate_site_entity(hass, entry, "sensor", None, "site_shared", key)
+        async_migrate_site_entity(
+            hass, entry, "sensor", None, "site_shared", suffix=key
+        )
         is None
     )
     assert (
         async_migrate_site_entity(
-            hass, entry, "sensor", "console_a", "site_shared", key
+            hass, entry, "sensor", "console_a", "site_shared", suffix=key
         )
         == "console_a_site_shared_" + key
     )
@@ -243,7 +250,7 @@ async def test_foreign_rows_missing_namespace_and_occupied_target(
     )
     assert (
         async_migrate_site_entity(
-            hass, entry, "sensor", "console_a", "site_shared", key
+            hass, entry, "sensor", "console_a", "site_shared", suffix=key
         )
         is None
     )
@@ -260,11 +267,11 @@ async def test_foreign_rows_missing_namespace_and_occupied_target(
     )
     own = _row(entity_registry, entry, "sensor", "site_other_" + key, key)
     assert (
-        async_migrate_site_entity(hass, entry, "sensor", None, "site_other", key)
+        async_migrate_site_entity(hass, entry, "sensor", None, "site_other", suffix=key)
         == own.unique_id
     )
     assert (
-        async_migrate_site_entity(hass, entry, "sensor", "site", "other", key)
+        async_migrate_site_entity(hass, entry, "sensor", "site", "other", suffix=key)
         == own.unique_id
     )
 
@@ -284,7 +291,12 @@ async def test_migration_race_keeps_owned_legacy(hass, entity_registry, caplog):
     ):
         assert (
             async_migrate_site_entity(
-                hass, entry, "sensor", "console_a", "site_shared", "active_vouchers"
+                hass,
+                entry,
+                "sensor",
+                "console_a",
+                "site_shared",
+                suffix="active_vouchers",
             )
             == row.unique_id
         )
@@ -316,7 +328,7 @@ async def test_migration_value_error_after_native_update_uses_actual_owned_ident
 
     with patch.object(entity_registry, "async_update_entity", side_effect=update):
         effective = async_migrate_site_entity(
-            hass, entry, "sensor", "console_a", "site_shared", key
+            hass, entry, "sensor", "console_a", "site_shared", suffix=key
         )
     assert effective == (None if metadata_changes else "console_a_site_shared_" + key)
     assert (
@@ -353,11 +365,11 @@ async def test_unexpected_migration_failure_propagates_and_later_discovery_is_sa
         pytest.raises(RuntimeError, match="unexpected"),
     ):
         async_migrate_site_entity(
-            hass, entry, "sensor", "console_a", "site_shared", "active_vouchers"
+            hass, entry, "sensor", "console_a", "site_shared", suffix="active_vouchers"
         )
     assert (
         async_migrate_site_entity(
-            hass, entry, "sensor", "console_a", "site_shared", "active_vouchers"
+            hass, entry, "sensor", "console_a", "site_shared", suffix="active_vouchers"
         )
         == "console_a_site_shared_active_vouchers"
     )
@@ -374,14 +386,14 @@ async def test_missing_lookup_record_is_not_claimed():
     registry.async_get.return_value = None
     assert (
         owned_site_entity_unique_id(
-            registry, "entry", "sensor", "legacy", "target", "key"
+            registry, "entry", "sensor", "legacy", "target", translation_key="key"
         )
         is None
     )
     registry.async_get_entity_id.side_effect = ["sensor.gone", None]
     assert (
         owned_site_entity_unique_id(
-            registry, "entry", "sensor", "legacy", "target", "key"
+            registry, "entry", "sensor", "legacy", "target", translation_key="key"
         )
         == "target"
     )
@@ -399,7 +411,7 @@ async def test_missing_lookup_record_is_not_claimed():
                 "sensor",
                 "console",
                 "site",
-                "key",
+                suffix="key",
             )
             is None
         )
@@ -686,14 +698,19 @@ async def test_known_physical_legacy_is_never_migrated_or_claimed(
     target = "console_a_site_shared_site_wired_clients"
     assert (
         async_migrate_site_entity(
-            hass, entry, "sensor", "console_a", "site_shared", "site_wired_clients"
+            hass,
+            entry,
+            "sensor",
+            "console_a",
+            "site_shared",
+            suffix="site_wired_clients",
         )
         == target
     )
     assert attr.asdict(entity_registry.async_get(physical.entity_id)) == original
     assert (
         async_migrate_site_entity(
-            hass, entry, "sensor", None, "site_shared", "site_wired_clients"
+            hass, entry, "sensor", None, "site_shared", suffix="site_wired_clients"
         )
         is None
     )
@@ -701,7 +718,12 @@ async def test_known_physical_legacy_is_never_migrated_or_claimed(
     assert logical.entity_id != physical.entity_id
     assert (
         async_migrate_site_entity(
-            hass, entry, "sensor", "console_a", "site_shared", "site_wired_clients"
+            hass,
+            entry,
+            "sensor",
+            "console_a",
+            "site_shared",
+            suffix="site_wired_clients",
         )
         == logical.unique_id
     )
@@ -740,7 +762,7 @@ async def test_owned_incompatible_target_is_not_reused(
     if with_legacy:
         legacy = _row(entity_registry, entry, "sensor", "site_shared_" + key, key)
     effective = async_migrate_site_entity(
-        hass, entry, "sensor", "console_a", "site_shared", key
+        hass, entry, "sensor", "console_a", "site_shared", suffix=key
     )
     assert effective == (legacy.unique_id if with_legacy else None)
     snapshot = _resolve_entity_ids(
@@ -766,7 +788,7 @@ async def test_owned_incompatible_target_is_not_reused(
     ],
 )
 async def test_ambiguous_owned_candidate_skips_and_is_retried(
-    hass, entity_registry, mock_coordinator, caplog, candidate, metadata
+    hass, entity_registry, mock_coordinator, caplog, candidate, *, metadata
 ):
     """Leave ambiguous candidates undiscovered so later valid metadata can retry."""
     entry = _entry(hass)
@@ -785,9 +807,9 @@ async def test_ambiguous_owned_candidate_skips_and_is_retried(
     )
     added = []
     callbacks = []
-    mock_coordinator.async_add_listener.side_effect = lambda listener: callbacks.append(
-        listener
-    ) or (lambda: None)
+    mock_coordinator.async_add_listener.side_effect = lambda listener: (
+        callbacks.append(listener) or (lambda: None)
+    )
     await sensor_platform.async_setup_entry(hass, entry, added.extend)
     assert added == []
     assert entity_registry.async_get(row.entity_id).unique_id == unique_id
@@ -973,9 +995,9 @@ async def test_missing_namespace_skips_until_later_discovery_and_reload(
     )
     added = []
     callbacks = []
-    mock_coordinator.async_add_listener.side_effect = lambda listener: callbacks.append(
-        listener
-    ) or (lambda: None)
+    mock_coordinator.async_add_listener.side_effect = lambda listener: (
+        callbacks.append(listener) or (lambda: None)
+    )
     entry.runtime_data = SimpleNamespace(
         coordinator=mock_coordinator, mobility_coordinator=None
     )

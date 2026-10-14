@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for rule change detection in the UniFi Insights config coordinator."""
 
 from __future__ import annotations

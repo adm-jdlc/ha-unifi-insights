@@ -15,7 +15,14 @@ agent: "agent"
 #   Timeouts: commands should complete within 120 seconds
 #   Environment: commands run inside the dev container (sandboxed);
 #     verify by checking that $PWD is under /workspaces/
-tools: ["search/codebase", "edit", "search", "execute/runInTerminal", "execute/getTerminalOutput"]
+tools:
+  [
+    "search/codebase",
+    "edit",
+    "search",
+    "execute/runInTerminal",
+    "execute/getTerminalOutput",
+  ]
 description: "Perform a comprehensive quality review of the UniFi Insights integration"
 ---
 

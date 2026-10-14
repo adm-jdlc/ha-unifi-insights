@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for classifying Network/Protect probe results."""
 
 from __future__ import annotations

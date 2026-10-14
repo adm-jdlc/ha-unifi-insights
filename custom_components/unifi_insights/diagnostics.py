@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Diagnostics support for UniFi Insights."""
 
 from __future__ import annotations
@@ -14,6 +15,9 @@ from homeassistant.const import CONF_API_KEY, CONF_HOST, CONF_VERIFY_SSL
 from .api import __version__ as api_version
 from .carrier_fabric_data import CarrierFabricData
 from .const import (
+    CONF_ACCESS_WEBHOOK_ENDPOINT_ID,
+    CONF_ACCESS_WEBHOOK_ID,
+    CONF_ACCESS_WEBHOOK_SECRET,
     CONF_CONNECTION_TYPE,
     CONF_CONSOLE_ID,
     CONNECTION_TYPE_REMOTE,
@@ -36,6 +40,7 @@ if TYPE_CHECKING:
 
     from . import UnifiInsightsConfigEntry
     from .carrier_fabric_data import CarrierFabricConfigEntry
+    from .coordinators.access import UnifiInsightsAccessCoordinator
     from .coordinators.mobility import UnifiInsightsMobilityCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,6 +52,10 @@ TO_REDACT = {
     "token",
     "accessToken",
     "access_token",
+    # Access webhook state: the receiver ID, endpoint ID and signing secret
+    CONF_ACCESS_WEBHOOK_ID,
+    CONF_ACCESS_WEBHOOK_ENDPOINT_ID,
+    CONF_ACCESS_WEBHOOK_SECRET,
     "refreshToken",
     "refresh_token",
     "password",
@@ -688,6 +697,50 @@ def _mobility_summary(coordinator: UnifiInsightsMobilityCoordinator) -> dict[str
     }
 
 
+# Access collections carry user and actor identifiers, PIN material and IDs
+# that link a door to a hub. Names stay, because they make a report readable.
+ACCESS_TO_REDACT = TO_REDACT | {
+    "id",
+    "location_id",
+    "user_id",
+    "actor",
+    "actor_id",
+    "user_email",
+    "first_name",
+    "last_name",
+    "full_name",
+    "alias",
+    "employee_number",
+    "access_policy_ids",
+    "access_policies",
+    "pin",
+    "pin_code",
+    "pin_codes",
+    "signature",
+    "authentication_value",
+    "token",
+}
+
+
+def _access_diagnostics(coordinator: UnifiInsightsAccessCoordinator) -> dict[str, Any]:
+    """Summarize Access auth state, feature capability and redacted snapshot."""
+    data = coordinator.data or {}
+    snapshot = {
+        "doors": [dict(door) for door in data.get("doors", {}).values()],
+        "devices": [dict(device) for device in data.get("devices", {}).values()],
+        "emergency": data.get("emergency"),
+    }
+    return {
+        "auth_failed": coordinator.auth_failed,
+        "webhook_active": coordinator.webhook_active,
+        "features": {
+            feature: coordinator.feature_available(feature)
+            for feature in ("doors", "devices", "emergency")
+        },
+        "snapshot": async_redact_data(snapshot, ACCESS_TO_REDACT),
+    }
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: UnifiInsightsConfigEntry | CarrierFabricConfigEntry
 ) -> dict[str, Any]:
@@ -805,6 +858,9 @@ async def async_get_config_entry_diagnostics(
     elif entry.data.get(CONF_CONNECTION_TYPE) == CONNECTION_TYPE_REMOTE:
         # Another remote entry with the same cloud key polls Mobility.
         diagnostics_data["mobility"] = {"owner": False}
+    access_coordinator = getattr(data, "access_coordinator", None)
+    if access_coordinator is not None:
+        diagnostics_data["access"] = _access_diagnostics(access_coordinator)
 
     # Last pass over the assembled payload: no MAC address leaves this
     # integration, whatever key the controller sent it under.

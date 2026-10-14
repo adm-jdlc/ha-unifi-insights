@@ -43,6 +43,8 @@ from .exceptions import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
+    from .access.auth import AccessTokenAuth
+
 _LOGGER = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
@@ -51,7 +53,7 @@ _T = TypeVar("_T")
 # quotes, so a secret containing a colon or an escaped quote is replaced whole.
 _SENSITIVE_KEYS_RE = re.compile(
     r'("(?:password|psk|passphrase|token|apiKey|api_key|secret|credential|'
-    r'x-api-key|authorization|code|voucher|fingerprint)"\s*:\s*)"(?:[^"\\]|\\.)*"',
+    r'x-api-key|authorization|code|voucher|fingerprint|pin|pin_code|pin_codes)"\s*:\s*)"(?:[^"\\]|\\.)*"',
     re.IGNORECASE,
 )
 
@@ -71,6 +73,9 @@ _SENSITIVE_KEYS = frozenset(
         "code",
         "voucher",
         "fingerprint",
+        "pin",
+        "pin_code",
+        "pin_codes",
     }
 )
 
@@ -107,7 +112,7 @@ def _retry_after_seconds(value: str | None) -> int:
     except ValueError:
         try:
             deadline = parsedate_to_datetime(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return DEFAULT_RATE_LIMIT_RETRY_AFTER
         if deadline.tzinfo is None:
             deadline = deadline.replace(tzinfo=UTC)
@@ -179,7 +184,7 @@ class BaseUniFiClient(ABC):
 
     def __init__(
         self,
-        auth: ApiKeyAuth | LocalAuth,
+        auth: ApiKeyAuth | LocalAuth | AccessTokenAuth,
         base_url: str,
         *,
         session: aiohttp.ClientSession | None = None,
@@ -253,6 +258,15 @@ class BaseUniFiClient(ABC):
         if isinstance(self._auth, LocalAuth):
             return self._auth.verify_ssl
         return True
+
+    def _ssl_for_request(self) -> bool | None:
+        """
+        Return a per-request TLS verification override, or None for the session's.
+
+        A session shared with Home Assistant keeps its own connector, so a client
+        that verifies differently passes its setting on every request.
+        """
+        return None
 
     def _get_headers(self) -> dict[str, str]:
         """
@@ -424,6 +438,11 @@ class BaseUniFiClient(ABC):
             url,
         )
 
+        request_options: dict[str, Any] = {}
+        ssl = self._ssl_for_request()
+        if ssl is not None:
+            request_options["ssl"] = ssl
+
         try:
             async with session.request(
                 method,
@@ -431,6 +450,7 @@ class BaseUniFiClient(ABC):
                 params=params,
                 json=json_data,
                 headers=request_headers,
+                **request_options,
             ) as response:
                 return await self._handle_response(
                     response,
@@ -657,6 +677,7 @@ class BaseUniFiClient(ABC):
         *,
         json_data: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        log_body: bool = True,
     ) -> dict[str, Any] | list[Any] | None:
         """
         Make a PUT request.
@@ -665,12 +686,15 @@ class BaseUniFiClient(ABC):
             path: API path.
             json_data: JSON body data.
             params: Query parameters.
+            log_body: Whether redacted response body excerpts may be logged.
 
         Returns:
             Response data.
 
         """
-        return await self._request("PUT", path, json_data=json_data, params=params)
+        return await self._request(
+            "PUT", path, json_data=json_data, params=params, log_body=log_body
+        )
 
     async def _patch(
         self,

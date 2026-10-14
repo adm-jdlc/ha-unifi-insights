@@ -805,6 +805,7 @@ async def internet_activity_entries(
     mock_network_client: Mock,
     mock_protect_client: Mock,
     mock_local_auth: Mock,
+    *,
     enable_custom_integrations: None,
 ) -> list[MockConfigEntry]:
     """Load two synthetic consoles with independent totals for one shared site."""
@@ -906,6 +907,7 @@ async def test_generic_internet_activity_payload_preserves_candidate_ownership(
     entity_registry: er.EntityRegistry,
     legacy_owner: str | None,
     target_owner: str,
+    *,
     expected_candidate: str | None,
 ) -> None:
     """The generic payload follows owned legacy identities without takeover."""

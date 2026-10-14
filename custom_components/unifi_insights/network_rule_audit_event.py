@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Event entity that reports UniFi network rule changes."""
 
 from __future__ import annotations
@@ -143,7 +144,7 @@ def discover_network_rule_change_events(
         if not isinstance(site_id, str) or site_id in known_site_ids:
             continue
         unique_id = async_migrate_site_entity(
-            hass, entry, "event", namespace, site_id, RULE_CHANGE_EVENT_KEY
+            hass, entry, "event", namespace, site_id, suffix=RULE_CHANGE_EVENT_KEY
         )
         if unique_id is None:
             continue

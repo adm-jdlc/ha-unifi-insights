@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for Issue #151 (legacy device metrics) and gateway model prefixes."""
 
 from unittest.mock import AsyncMock, MagicMock

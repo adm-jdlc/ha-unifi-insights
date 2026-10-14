@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for rule audit integration in UnifiConfigCoordinator."""
 
 from __future__ import annotations

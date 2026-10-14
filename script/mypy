@@ -1,0 +1,22 @@
+#!/bin/bash
+
+# Run the canonical package check with the project's installed HA dependencies.
+# An isolated hook without those dependencies treats HA bases as Any.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/.."
+
+if [[ -x "$PWD/.venv/bin/python" ]]; then
+    MYPY_PYTHON="$PWD/.venv/bin/python"
+elif [[ -x "$PWD/.local/ha-venv/bin/python" ]]; then
+    MYPY_PYTHON="$PWD/.local/ha-venv/bin/python"
+elif [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/bin/python" ]]; then
+    MYPY_PYTHON="$VIRTUAL_ENV/bin/python"
+else
+    echo "Project environment unavailable. Run ./script/setup/bootstrap." >&2
+    exit 1
+fi
+
+exec "$MYPY_PYTHON" -m mypy custom_components/unifi_insights

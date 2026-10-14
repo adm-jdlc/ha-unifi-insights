@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for UniFi Insights repairs."""
 
 from __future__ import annotations

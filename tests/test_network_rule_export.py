@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the export_network_rules action and its builder."""
 
 from __future__ import annotations

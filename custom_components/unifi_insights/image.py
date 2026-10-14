@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Support for UniFi Insights QR codes and floor plan images."""
 
 from __future__ import annotations
@@ -130,7 +131,7 @@ async def async_setup_entry(
             if site_id in known_voucher_keys:
                 continue
             unique_id = async_migrate_site_entity(
-                hass, entry, "image", namespace, site_id, "voucher_qr_code"
+                hass, entry, "image", namespace, site_id, suffix="voucher_qr_code"
             )
             if unique_id is None:
                 continue

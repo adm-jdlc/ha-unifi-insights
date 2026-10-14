@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the UniFi Protect LED level conversions."""
 
 from __future__ import annotations

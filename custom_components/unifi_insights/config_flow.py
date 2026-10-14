@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Config flow for UniFi Insights integration."""
 
 from __future__ import annotations
@@ -5,9 +6,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import voluptuous as vol
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -25,6 +25,7 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 from pydantic import ValidationError
+from yarl import URL
 
 from .api import (
     ApiKeyAuth,
@@ -35,7 +36,9 @@ from .api import (
     UniFiNotFoundError,
     UniFiResponseError,
     UniFiTimeoutError,
+    UniFiValidationError,
 )
+from .api.access import UniFiAccessClient
 from .api.carrier_fabric.client import UniFiCarrierFabricClient
 from .api.network import UniFiNetworkClient
 from .api.protect import UniFiProtectClient
@@ -47,9 +50,17 @@ from .console_identity import (
     resolve_console_identity,
 )
 from .const import (
+    ACCESS_CONFIG_KEYS,
     CARRIER_FABRIC_REQUEST_TIMEOUT,
+    CONF_ACCESS_PORT,
+    CONF_ACCESS_TOKEN,
+    CONF_ACCESS_WEBHOOK,
+    CONF_ACCESS_WEBHOOK_ENDPOINT_ID,
+    CONF_ACCESS_WEBHOOK_ID,
+    CONF_ACCESS_WEBHOOK_SECRET,
     CONF_CARRIER_ACTIONS,
     CONF_CARRIER_ORG_ID,
+    CONF_CLEAR_ACCESS_TOKEN,
     CONF_CLIENT_CONTROL,
     CONF_CONNECTION_TYPE,
     CONF_CONSOLE_ID,
@@ -62,6 +73,8 @@ from .const import (
     CONNECTION_TYPE_CARRIER_FABRIC,
     CONNECTION_TYPE_LOCAL,
     CONNECTION_TYPE_REMOTE,
+    DEFAULT_ACCESS_PORT,
+    DEFAULT_ACCESS_WEBHOOK,
     DEFAULT_API_HOST,
     DEFAULT_CARRIER_ACTIONS,
     DEFAULT_CLIENT_CONTROL,
@@ -77,6 +90,7 @@ from .helpers import (
 from .probe import (
     ProbeResult,
     ProbeStatus,
+    async_probe_access,
     async_probe_carrier_fabric,
     async_probe_network,
     async_probe_protect,
@@ -85,7 +99,45 @@ from .probe import (
 )
 from .topology_contract import normalize_mac as normalize_hardware_mac
 
+# Schemas are typed against probatio, the library HA 2026.10 annotates its schema
+# arguments with. Runtime still imports voluptuous: HA 2026.10 aliases it to probatio,
+# and the 2026.6 minimum ships real voluptuous, so only the type checker sees probatio.
+if TYPE_CHECKING:
+    import probatio as vol
+else:
+    import voluptuous as vol
+
 _LOGGER = logging.getLogger(__name__)
+
+# Access port field: the console's developer API listens on a TCP port.
+_ACCESS_PORT_SCHEMA = vol.All(vol.Coerce(int), vol.Range(min=1, max=65535))
+_ACCESS_WEBHOOK_STATE_KEYS = (
+    CONF_ACCESS_WEBHOOK_ID,
+    CONF_ACCESS_WEBHOOK_ENDPOINT_ID,
+    CONF_ACCESS_WEBHOOK_SECRET,
+)
+
+
+def _host_key(host: object) -> str | None:
+    """Return the lower-cased host name of a host or URL, or None when unusable."""
+    if not isinstance(host, str) or not host.strip():
+        return None
+    text = host.strip()
+    parsed = URL(text) if "://" in text else URL(f"https://{text}")
+    return parsed.host.lower() if parsed.host else None
+
+
+def _clear_access_field(entry: ConfigEntry) -> dict[Any, Any]:
+    """Offer the clear-token flag only for an entry that stores a token."""
+    if entry.data.get(CONF_ACCESS_TOKEN):
+        return {vol.Optional(CONF_CLEAR_ACCESS_TOKEN, default=False): bool}
+    return {}
+
+
+def _access_server_moved(entry: ConfigEntry, host: str, port: int) -> bool:
+    """Return True when the Access server differs from the one the entry used."""
+    old_port = entry.data.get(CONF_ACCESS_PORT, DEFAULT_ACCESS_PORT)
+    return _host_key(entry.data.get(CONF_HOST)) != _host_key(host) or old_port != port
 
 
 class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -219,6 +271,7 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
         api_key: str,
         *,
         verify_ssl: bool = False,
+        access_token: str | None = None,
     ) -> tuple[bool, str | None, dict[str, str]]:
         """Validate local connection against Network and/or Protect APIs."""
         auth = LocalAuth(api_key=api_key, verify_ssl=verify_ssl)
@@ -266,7 +319,9 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                 if "id" not in console_info:
                     # A shared site cannot identify a console. Match setup's
                     # explicit local-endpoint fallback when no MAC is available.
-                    host_id = normalize_console_namespace(host, credentials=(api_key,))
+                    host_id = normalize_console_namespace(
+                        host, credentials=(api_key, access_token)
+                    )
                     if host_id:
                         console_info["id"] = host_id
                     site_name = getattr(res.sites[0], "name", None)
@@ -330,6 +385,78 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
             return True, None, console_info
 
         return False, self._flow_error_for_probes(network, protect), console_info
+
+    @staticmethod
+    def _access_token_input(user_input: dict[str, Any]) -> str | None:
+        """Return the typed Access token without surrounding whitespace, or None."""
+        value = user_input.get(CONF_ACCESS_TOKEN)
+        if not isinstance(value, str):
+            return None
+        return value.strip() or None
+
+    async def _async_validate_access(
+        self,
+        *,
+        host: str,
+        token: str,
+        port: int,
+        verify_ssl: bool,
+    ) -> str | None:
+        """
+        Probe Access with a token on the given console host and port.
+
+        Returns None when Access answers with data or is empty. Otherwise it
+        returns the form error key. Access never gates the entry, but a token
+        that is saved must work, so the entry is not saved on failure.
+        """
+        try:
+            client = UniFiAccessClient(
+                token=token,
+                host=host,
+                port=port,
+                verify_ssl=verify_ssl,
+                session=async_get_clientsession(self.hass, verify_ssl=verify_ssl),
+            )
+        except UniFiValidationError:
+            return "access_unsupported"
+        result = await async_probe_with_client(client, async_probe_access)
+        if result.status in (ProbeStatus.AVAILABLE, ProbeStatus.EMPTY):
+            return None
+        if result.status is ProbeStatus.AUTH_FAILED:
+            return "access_invalid_auth"
+        if result.status is ProbeStatus.UNREACHABLE:
+            return "access_cannot_connect"
+        return "access_unsupported"
+
+    async def _async_create_local_entry(
+        self, user_input: dict[str, Any], console_info: dict[str, str]
+    ) -> ConfigFlowResult:
+        """Create a local entry; the Access token and port are stored only if given."""
+        console_id = console_info.get("id") or user_input[CONF_HOST].lower()
+        await self.async_set_unique_id(console_id)
+        self._abort_if_unique_id_configured()
+
+        entry_data: dict[str, Any] = {
+            CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+            CONF_HOST: user_input[CONF_HOST],
+            CONF_API_KEY: user_input[CONF_API_KEY],
+            CONF_VERIFY_SSL: user_input.get(CONF_VERIFY_SSL, False),
+        }
+        if console_info.get("mac"):
+            entry_data[CONF_CONSOLE_ID] = console_info["mac"]
+        if console_info.get("name") and console_info.get("mac"):
+            entry_data[CONF_CONSOLE_NAME] = console_info["name"]
+        access_token = self._access_token_input(user_input)
+        if access_token:
+            entry_data[CONF_ACCESS_TOKEN] = access_token
+            entry_data[CONF_ACCESS_PORT] = user_input.get(
+                CONF_ACCESS_PORT, DEFAULT_ACCESS_PORT
+            )
+
+        return self.async_create_entry(
+            title="UniFi Insights (Local)",
+            data=entry_data,
+        )
 
     async def _async_validate_remote_console(
         self,
@@ -520,27 +647,21 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                     verify_ssl=user_input.get(CONF_VERIFY_SSL, False),
                 )
                 if is_valid:
-                    console_id = console_info.get("id") or user_input[CONF_HOST].lower()
-                    await self.async_set_unique_id(console_id)
-                    self._abort_if_unique_id_configured()
-
-                    entry_data: dict[str, Any] = {
-                        CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
-                        CONF_HOST: user_input[CONF_HOST],
-                        CONF_API_KEY: user_input[CONF_API_KEY],
-                        CONF_VERIFY_SSL: user_input.get(CONF_VERIFY_SSL, False),
-                    }
-                    if console_info.get("mac"):
-                        entry_data[CONF_CONSOLE_ID] = console_info["mac"]
-                    if console_info.get("name") and console_info.get("mac"):
-                        entry_data[CONF_CONSOLE_NAME] = console_info["name"]
-
-                    return self.async_create_entry(
-                        title="UniFi Insights (Local)",
-                        data=entry_data,
-                    )
-
-                if error_code == "invalid_auth":
+                    access_token = self._access_token_input(user_input)
+                    if access_token:
+                        access_error = await self._async_validate_access(
+                            host=user_input[CONF_HOST],
+                            token=access_token,
+                            port=user_input.get(CONF_ACCESS_PORT, DEFAULT_ACCESS_PORT),
+                            verify_ssl=user_input.get(CONF_VERIFY_SSL, False),
+                        )
+                        if access_error:
+                            errors[CONF_ACCESS_TOKEN] = access_error
+                    if not errors:
+                        return await self._async_create_local_entry(
+                            user_input, console_info
+                        )
+                elif error_code == "invalid_auth":
                     errors[CONF_API_KEY] = "invalid_auth"
                 else:
                     errors["base"] = error_code or "cannot_connect"
@@ -558,6 +679,10 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_HOST, default=DEFAULT_API_HOST): str,
                     vol.Required(CONF_API_KEY): str,
                     vol.Optional(CONF_VERIFY_SSL, default=False): bool,
+                    vol.Optional(CONF_ACCESS_TOKEN): str,
+                    vol.Optional(
+                        CONF_ACCESS_PORT, default=DEFAULT_ACCESS_PORT
+                    ): _ACCESS_PORT_SCHEMA,
                 }
             ),
             errors=errors,
@@ -812,7 +937,10 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                     if is_valid:
                         console_id = normalize_console_namespace(
                             reauth_entry.data.get(CONF_CONSOLE_ID),
-                            credentials=(reauth_entry.data.get(CONF_API_KEY),),
+                            credentials=(
+                                reauth_entry.data.get(CONF_API_KEY),
+                                reauth_entry.data.get(CONF_ACCESS_TOKEN),
+                            ),
                         )
                         new_data = {
                             **reauth_entry.data,
@@ -899,6 +1027,127 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def _async_reconfigure_access(
+        self, entry: ConfigEntry, user_input: dict[str, Any]
+    ) -> tuple[dict[str, str], dict[str, Any], bool]:
+        """
+        Validate and plan the Access fields for a local reconfigure.
+
+        Returns the form errors, the Access fields to store, and whether the
+        old Access webhook must be removed from its console before the save.
+        Rotating the token on the same host and port keeps the stored webhook
+        identifiers and secret. Moving to another host or port, or clearing the
+        token, makes the stored registration belong to a server the entry no
+        longer uses, so it is removed and its state dropped. A moved entry
+        validates the stored token against the new server first.
+        """
+        stored_token = entry.data.get(CONF_ACCESS_TOKEN)
+        has_webhook = any(key in entry.data for key in _ACCESS_WEBHOOK_STATE_KEYS)
+        stored_fields = {
+            key: entry.data[key] for key in ACCESS_CONFIG_KEYS if key in entry.data
+        }
+        new_host = user_input[CONF_HOST]
+        new_port = user_input.get(CONF_ACCESS_PORT, DEFAULT_ACCESS_PORT)
+        verify_ssl = user_input.get(CONF_VERIFY_SSL, False)
+        typed_token = self._access_token_input(user_input)
+        moved = _access_server_moved(entry, new_host, new_port)
+        clear = bool(user_input.get(CONF_CLEAR_ACCESS_TOKEN)) and typed_token is None
+
+        if clear:
+            # Clearing without a stored token keeps the existing behaviour: no
+            # remote call, and nothing to drop.
+            return {}, {}, bool(stored_token and has_webhook)
+
+        token = typed_token
+        if token is None and stored_token and moved:
+            token = stored_token
+        if token is None:
+            return {}, stored_fields, False
+
+        access_error = await self._async_validate_access(
+            host=new_host, token=token, port=new_port, verify_ssl=verify_ssl
+        )
+        if access_error:
+            return {CONF_ACCESS_TOKEN: access_error}, {}, False
+
+        access_fields: dict[str, Any] = {
+            CONF_ACCESS_TOKEN: token,
+            CONF_ACCESS_PORT: new_port,
+        }
+        if stored_token and has_webhook and moved:
+            return {}, access_fields, True
+        for key in _ACCESS_WEBHOOK_STATE_KEYS:
+            if key in entry.data:
+                access_fields[key] = entry.data[key]
+        return {}, access_fields, False
+
+    async def _async_reconfigure_local(
+        self,
+        entry: ConfigEntry,
+        user_input: dict[str, Any],
+        console_info: dict[str, str],
+        *,
+        access_data: dict[str, Any],
+        cleanup: bool,
+    ) -> ConfigFlowResult:
+        """Save a validated local reconfigure, with its Access fields and cleanup."""
+        current_id = entry.data.get(CONF_CONSOLE_ID) or entry.unique_id
+        if (
+            normalize_console_namespace(
+                current_id,
+                credentials=(
+                    entry.data.get(CONF_API_KEY),
+                    user_input[CONF_API_KEY],
+                ),
+            )
+            is None
+        ):
+            current_id = None
+        # Keep the stored identity when device inspection cannot
+        # discover hardware. A host fallback may be promoted
+        # once the console reports a MAC, but two real hardware
+        # addresses must still identify the same console.
+        new_id = console_info.get("mac") or current_id or console_info.get("id")
+        current_mac = normalize_hardware_mac(current_id)
+        new_mac = normalize_hardware_mac(new_id)
+        if current_mac and new_mac and new_mac != current_mac:
+            return self.async_abort(reason="account_mismatch")
+
+        # A legacy host or site identity can adopt a MAC only
+        # when another entry does not already own it. The native
+        # update/reload helper does not enforce that ownership.
+        if new_id and new_id != entry.unique_id:
+            entries = self.hass.config_entries
+            owner = entries.async_entry_for_domain_unique_id(DOMAIN, new_id)
+            if owner and owner.entry_id != entry.entry_id:
+                return self.async_abort(reason="already_configured")
+
+        new_data = {
+            CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+            CONF_HOST: user_input[CONF_HOST],
+            CONF_API_KEY: user_input[CONF_API_KEY],
+            CONF_VERIFY_SSL: user_input.get(CONF_VERIFY_SSL, False),
+        }
+        if new_id:
+            new_data[CONF_CONSOLE_ID] = new_id
+
+        if cleanup:
+            # Remote cleanup runs after the new connection validated and
+            # immediately before the save, so a rejected reconfigure keeps the
+            # working registration.
+            # Local import: access_webhook depends on this module's package init.
+            from .access_webhook import async_remove_access_webhook  # noqa: PLC0415
+
+            await async_remove_access_webhook(self.hass, entry)
+        new_data.update(access_data)
+        return self._async_update_site_entry_and_abort(
+            entry,
+            new_data,
+            new_id,
+            unique_id=new_id or entry.unique_id,
+            reason="reconfigure_successful",
+        )
+
     async def async_step_reconfigure_carrier_fabric(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -946,62 +1195,25 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                         host=user_input[CONF_HOST],
                         api_key=user_input[CONF_API_KEY],
                         verify_ssl=user_input.get(CONF_VERIFY_SSL, False),
+                        access_token=entry.data.get(CONF_ACCESS_TOKEN),
                     )
                     if is_valid:
-                        current_id = entry.data.get(CONF_CONSOLE_ID) or entry.unique_id
-                        if (
-                            normalize_console_namespace(
-                                current_id,
-                                credentials=(
-                                    entry.data.get(CONF_API_KEY),
-                                    user_input[CONF_API_KEY],
-                                ),
+                        (
+                            access_errors,
+                            access_data,
+                            cleanup,
+                        ) = await self._async_reconfigure_access(entry, user_input)
+                        if access_errors:
+                            errors.update(access_errors)
+                        else:
+                            return await self._async_reconfigure_local(
+                                entry,
+                                user_input,
+                                console_info,
+                                access_data=access_data,
+                                cleanup=cleanup,
                             )
-                            is None
-                        ):
-                            current_id = None
-                        # Keep the stored identity when device inspection cannot
-                        # discover hardware. A host fallback may be promoted
-                        # once the console reports a MAC, but two real hardware
-                        # addresses must still identify the same console.
-                        new_id = (
-                            console_info.get("mac")
-                            or current_id
-                            or console_info.get("id")
-                        )
-                        current_mac = normalize_hardware_mac(current_id)
-                        new_mac = normalize_hardware_mac(new_id)
-                        if current_mac and new_mac and new_mac != current_mac:
-                            return self.async_abort(reason="account_mismatch")
-
-                        # A legacy host or site identity can adopt a MAC only
-                        # when another entry does not already own it. The native
-                        # update/reload helper does not enforce that ownership.
-                        if new_id and new_id != entry.unique_id:
-                            entries = self.hass.config_entries
-                            owner = entries.async_entry_for_domain_unique_id(
-                                DOMAIN, new_id
-                            )
-                            if owner and owner.entry_id != entry.entry_id:
-                                return self.async_abort(reason="already_configured")
-
-                        new_data = {
-                            CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
-                            CONF_HOST: user_input[CONF_HOST],
-                            CONF_API_KEY: user_input[CONF_API_KEY],
-                            CONF_VERIFY_SSL: user_input.get(CONF_VERIFY_SSL, False),
-                        }
-                        if new_id:
-                            new_data[CONF_CONSOLE_ID] = new_id
-
-                        return self._async_update_site_entry_and_abort(
-                            entry,
-                            new_data,
-                            new_id,
-                            unique_id=new_id or entry.unique_id,
-                            reason="reconfigure_successful",
-                        )
-                    if error_code == "invalid_auth":
+                    elif error_code == "invalid_auth":
                         errors[CONF_API_KEY] = "invalid_auth"
                     else:
                         errors["base"] = error_code or "cannot_connect"
@@ -1099,6 +1311,14 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
                             CONF_VERIFY_SSL,
                             default=entry.data.get(CONF_VERIFY_SSL, False),
                         ): bool,
+                        vol.Optional(CONF_ACCESS_TOKEN): str,
+                        vol.Optional(
+                            CONF_ACCESS_PORT,
+                            default=entry.data.get(
+                                CONF_ACCESS_PORT, DEFAULT_ACCESS_PORT
+                            ),
+                        ): _ACCESS_PORT_SCHEMA,
+                        **_clear_access_field(entry),
                     }
                 ),
                 errors=errors,
@@ -1207,6 +1427,15 @@ class UnifiInsightsOptionsFlow(OptionsFlow):
                 default=default_client_control,
             ): bool,
         }
+        if self._access_webhook_available():
+            schema[
+                vol.Optional(
+                    CONF_ACCESS_WEBHOOK,
+                    default=self.config_entry.options.get(
+                        CONF_ACCESS_WEBHOOK, DEFAULT_ACCESS_WEBHOOK
+                    ),
+                )
+            ] = bool
         if show_site_picker:
             site_options = [
                 SelectOptionDict(value=site_id, label=name)
@@ -1235,6 +1464,14 @@ class UnifiInsightsOptionsFlow(OptionsFlow):
             data_schema=self.add_suggested_values_to_schema(
                 vol.Schema(schema), {CONF_SITE_IDS: current_site_ids}
             ),
+        )
+
+    def _access_webhook_available(self) -> bool:
+        """Offer the Access webhook toggle only for local entries with a token."""
+        return self.config_entry.data.get(
+            CONF_CONNECTION_TYPE
+        ) == CONNECTION_TYPE_LOCAL and bool(
+            self.config_entry.data.get(CONF_ACCESS_TOKEN)
         )
 
     def _available_sites(self) -> dict[str, str]:

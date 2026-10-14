@@ -63,9 +63,11 @@ if [[ -f CONTRIBUTING.md ]]; then
 fi
 
 log_header "Checking spelling with codespell"
+# Match the existing source hook's accepted technical terms and exclusions.
+# Vite generates the bundles; editable frontend sources remain checked by hooks.
 codespell \
-    --ignore-words-list=hass \
-    --skip="./.*,*.csv,*.json,*.ambr,uv.lock" \
+    --ignore-words-list=aiport,astroid,checkin,currenty,hass,iif,incomfort,lookin,nam,NotIn,unparseable \
+    --skip="./.*,*.csv,*.json,*.ambr,uv.lock,tests/fixtures/*,custom_components/unifi_insights/frontend/*.js" \
     --quiet-level=2 \
     "${SPELL_TARGETS[@]}"
 

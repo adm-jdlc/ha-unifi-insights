@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for helper utilities in UniFi Insights."""
 
 from unittest.mock import MagicMock

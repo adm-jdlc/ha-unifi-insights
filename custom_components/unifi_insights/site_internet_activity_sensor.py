@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Site-level historical internet activity sensors for UniFi Insights."""
 
 from __future__ import annotations
@@ -292,7 +293,7 @@ def _discover_site_internet_activity_sensors(
             activity_key = (site_id, activity_desc.key)
             if activity_key not in known_sensor_keys:
                 unique_id = async_migrate_site_entity(
-                    hass, entry, "sensor", namespace, site_id, activity_desc.key
+                    hass, entry, "sensor", namespace, site_id, suffix=activity_desc.key
                 )
                 if unique_id is None:
                     continue

@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for translation key completeness.
 
 `translations/en.json` is the file Home Assistant actually loads at

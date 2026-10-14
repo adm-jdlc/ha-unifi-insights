@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Support for UniFi Insights firmware updates."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Protect coordinator for UniFi Insights - handles Protect device data."""
 
 from __future__ import annotations

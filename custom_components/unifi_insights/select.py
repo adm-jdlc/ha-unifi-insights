@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Support for UniFi Protect select entities."""
 
 from __future__ import annotations

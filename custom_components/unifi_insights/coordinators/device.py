@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Device coordinator for UniFi Insights - handles fast-changing device data."""
 
 from __future__ import annotations

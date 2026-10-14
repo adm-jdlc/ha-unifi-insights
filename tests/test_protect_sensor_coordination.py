@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for Protect sensor coordination and door state protection."""
 
 from __future__ import annotations

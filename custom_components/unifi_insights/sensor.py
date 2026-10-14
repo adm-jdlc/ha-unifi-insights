@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Support for UniFi Insights sensors."""
 
 from __future__ import annotations
@@ -932,6 +933,7 @@ def _discover_device_sensors(
     device_id: str,
     device_data: dict[str, Any],
     known_sensor_keys: set[tuple[Any, ...]],
+    *,
     entities: list[SensorEntity],
 ) -> None:
     """Discover standard network device sensors."""
@@ -1040,6 +1042,7 @@ def _discover_port_sensors(
     device_id: str,
     device_data: dict[str, Any],
     known_sensor_keys: set[tuple[Any, ...]],
+    *,
     entities: list[SensorEntity],
 ) -> None:
     """Discover port sensors for a network device."""
@@ -1162,8 +1165,8 @@ def _discover_port_sensors(
                 site_id,
                 device_id,
                 active_port_indices,
-                known_sensor_keys,
-                entities,
+                known_sensor_keys=known_sensor_keys,
+                entities=entities,
             )
 
 
@@ -1173,6 +1176,7 @@ def _create_port_stats_fallback(
     site_id: str,
     device_id: str,
     active_ports: set[int],
+    *,
     known_sensor_keys: set[tuple[Any, ...]],
     entities: list[SensorEntity],
 ) -> None:
@@ -1233,6 +1237,7 @@ def _discover_outlet_sensors(
     device_id: str,
     device_data: dict[str, Any],
     known_sensor_keys: set[tuple[Any, ...]],
+    *,
     entities: list[SensorEntity],
 ) -> None:
     """Discover outlet sensors for PDUs and smart power strips."""
@@ -1416,7 +1421,7 @@ async def async_setup_entry(
                         device_id,
                         device_data,
                         known_sensor_keys,
-                        entities,
+                        entities=entities,
                     )
                     _discover_port_sensors(
                         coordinator,
@@ -1424,7 +1429,7 @@ async def async_setup_entry(
                         device_id,
                         device_data,
                         known_sensor_keys,
-                        entities,
+                        entities=entities,
                     )
                     _discover_outlet_sensors(
                         coordinator,
@@ -1432,7 +1437,7 @@ async def async_setup_entry(
                         device_id,
                         device_data,
                         known_sensor_keys,
-                        entities,
+                        entities=entities,
                     )
                     entities.extend(
                         discover_storage_sensors(
@@ -1458,7 +1463,7 @@ async def async_setup_entry(
                             "sensor",
                             namespace,
                             site_id,
-                            site_desc.key,
+                            suffix=site_desc.key,
                         )
                         if unique_id is None:
                             continue
@@ -1660,6 +1665,7 @@ class UnifiPortSensor(UnifiInsightsEntity, SensorEntity):
         site_id: str,
         device_id: str,
         port_idx: int,
+        *,
         port_label: str | None = None,
     ) -> None:
         """Initialize the port sensor."""

@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for leak detection via featureFlags.waterLeak (USL-Environmental)."""
 
 from typing import TYPE_CHECKING

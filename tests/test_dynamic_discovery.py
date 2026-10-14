@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for dynamic entity discovery across UniFi Insights platforms."""
 
 from __future__ import annotations

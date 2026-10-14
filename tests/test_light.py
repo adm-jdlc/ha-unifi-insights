@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for UniFi Protect light platform."""
 
 from __future__ import annotations

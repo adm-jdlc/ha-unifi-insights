@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Support for UniFi Insights device tracker."""
 
 from __future__ import annotations

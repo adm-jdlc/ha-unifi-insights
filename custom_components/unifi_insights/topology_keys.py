@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """
 Per-entry secret keys for opaque topology node ids.
 

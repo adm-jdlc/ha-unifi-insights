@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Fresh, versioned export of the UniFi network rule families."""
 
 from __future__ import annotations

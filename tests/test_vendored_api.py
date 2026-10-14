@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the vendored UniFi API package."""
 
 from __future__ import annotations
@@ -4021,8 +4022,8 @@ async def test_firewall_update_policy_ordering_sends_only_spec_keys(
 ) -> None:
     """Every accepted input form is validated and sent with the spec's keys."""
     if ordered == "model":
-        ordered = OrderedFirewallPolicyIds(
-            before_system_defined=["p1"], after_system_defined=["p2"]
+        ordered = OrderedFirewallPolicyIds.model_validate(
+            {"before_system_defined": ["p1"], "after_system_defined": ["p2"]}
         )
     client = _network_client()
     client._put = AsyncMock(return_value={"data": {"orderedFirewallPolicyIds": {}}})
@@ -4151,9 +4152,12 @@ async def test_firewall_patch_rule() -> None:
         client.build_api_path("/sites/site-1/firewall/policies/rule-1"),
         json_data={"loggingEnabled": True},
     )
+    # Unknown keyword is passed through a typed bag so the static signature stays
+    # honest; the runtime call still has to bind it and fails with TypeError.
+    unexpected: dict[str, Any] = {"name": "Renamed"}
     with pytest.raises(TypeError):
-        await client.firewall.patch_rule(  # type: ignore[call-arg]
-            "site-1", "rule-1", logging_enabled=True, name="Renamed"
+        await client.firewall.patch_rule(
+            "site-1", "rule-1", logging_enabled=True, **unexpected
         )
     client._patch.assert_awaited_once()
 
@@ -4354,15 +4358,17 @@ async def test_protect_pos_ingest_transaction() -> None:
     client = _protect_client()
     client._post = AsyncMock(return_value={"created": True, "eventId": "evt-pos-123"})
 
-    request = PosTransactionRequest(
-        type=PosTransactionType.SALE,
-        external_id="tx-987",
-        amount=19.99,
-        currency="USD",
-        line_items=[PosLineItem(title="Coffee", quantity=2)],
-        location=PosLocation(id="reg-1", name="Main Register"),
-        payment_types=["credit_card"],
-        timestamp=1700000000000,
+    request = PosTransactionRequest.model_validate(
+        {
+            "type": PosTransactionType.SALE,
+            "external_id": "tx-987",
+            "amount": 19.99,
+            "currency": "USD",
+            "line_items": [PosLineItem(title="Coffee", quantity=2)],
+            "location": PosLocation(id="reg-1", name="Main Register"),
+            "payment_types": ["credit_card"],
+            "timestamp": 1700000000000,
+        }
     )
 
     response = await client.pos.ingest_transaction("cam-1", request)
@@ -4488,15 +4494,17 @@ async def test_protect_pos_ingest_transaction_payload_variants_and_invalid_type(
     client = _protect_client()
     client._post = AsyncMock(return_value={"created": True, "eventId": "evt-1"})
 
-    model_req = PosTransactionRequest(
-        type=PosTransactionType.SALE,
-        external_id="tx-100",
-        amount=42.50,
-        currency="USD",
-        line_items=[PosLineItem(title="Widget", quantity=3)],
-        location=PosLocation(id="reg-2", name="Counter"),
-        payment_types=["cash"],
-        timestamp=1700000001000,
+    model_req = PosTransactionRequest.model_validate(
+        {
+            "type": PosTransactionType.SALE,
+            "external_id": "tx-100",
+            "amount": 42.50,
+            "currency": "USD",
+            "line_items": [PosLineItem(title="Widget", quantity=3)],
+            "location": PosLocation(id="reg-2", name="Counter"),
+            "payment_types": ["cash"],
+            "timestamp": 1700000001000,
+        }
     )
 
     snake_dict = {

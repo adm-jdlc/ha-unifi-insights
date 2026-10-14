@@ -206,8 +206,10 @@ def test_model_pipeline_omitted_sizes_and_literal_health(healthy: Any) -> None:
 
 def test_explicit_storage_model_serialization() -> None:
     """Explicit models, extra aliases and Python/JSON alias modes preserve omissions."""
-    model = StorageInfo(healthy=False, usedSpaceBytes=0, totalSpaceBytes=100)
-    nvr = NVR(id="nvr1", storage_info=model)
+    model = StorageInfo.model_validate(
+        {"healthy": False, "usedSpaceBytes": 0, "totalSpaceBytes": 100}
+    )
+    nvr = NVR.model_validate({"id": "nvr1", "storage_info": model})
     assert nvr.model_dump()["storage_info"] == {
         "healthy": False,
         "usedSpaceBytes": 0,
@@ -251,11 +253,13 @@ def test_storage_info_rejects_non_integer_sizes(
 
 def test_targeted_serializer_preserves_caller_filters() -> None:
     """Stripping defaults must not restore excluded/null nested fields."""
-    nvr = NVR(
-        id="nvr1",
-        storage_info=StorageInfo(
-            healthy=None, usedSize=0, extra={"keep": 1, "drop": 2}
-        ),
+    nvr = NVR.model_validate(
+        {
+            "id": "nvr1",
+            "storage_info": StorageInfo.model_validate(
+                {"healthy": None, "usedSize": 0, "extra": {"keep": 1, "drop": 2}}
+            ),
+        }
     )
     assert nvr.model_dump(by_alias=True, exclude_none=True)["storageInfo"] == {
         "usedSize": 0,
@@ -282,9 +286,11 @@ async def test_poll_model_wss_delta_null_and_generation(
         hass, mock_network_client, mock_protect_client, mock_config_entry
     )
     try:
-        mock_protect_client.nvr.get.return_value = NVR(
-            id="nvr1",
-            storage_info=StorageInfo(usedSize=90, totalSize=100, healthy=False),
+        mock_protect_client.nvr.get.return_value = NVR.model_validate(
+            {
+                "id": "nvr1",
+                "storage_info": StorageInfo(usedSize=90, totalSize=100, healthy=False),
+            }
         )
         await coordinator._fetch_nvr()
         mock_protect_client.nvr.get.assert_awaited_once_with()
@@ -303,9 +309,13 @@ async def test_poll_model_wss_delta_null_and_generation(
             coordinator._handle_device_update(
                 "nvr", {"id": "nvr1", "storageInfo": {"usedSize": 95, "healthy": False}}
             )
-            return NVR(
-                id="nvr1",
-                storage_info=StorageInfo(usedSize=0, totalSize=100, healthy=True),
+            return NVR.model_validate(
+                {
+                    "id": "nvr1",
+                    "storage_info": StorageInfo(
+                        usedSize=0, totalSize=100, healthy=True
+                    ),
+                }
             )
 
         mock_protect_client.nvr.get.side_effect = stale_poll

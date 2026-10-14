@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Site configuration and legacy section helpers for UnifiConfigCoordinator."""
 
 from __future__ import annotations
@@ -354,8 +355,8 @@ async def async_fetch_site_rule_section(
     site_id: str,
     site_name: str | None,
     fetch: Callable[[str], Awaitable[list[Any]]],
-    failed_sections: set[tuple[str, str]],
     *,
+    failed_sections: set[tuple[str, str]],
     outcomes: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, Any]:
     """Fetch one rule section (port forwards, traffic rules, NAT, routes)."""

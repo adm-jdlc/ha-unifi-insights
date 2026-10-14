@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Base coordinator for UniFi Insights."""
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ class UnifiBaseCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         protect_client: UniFiProtectClient | None,
         entry: ConfigEntry,
         name: str,
+        *,
         update_interval: timedelta,
     ) -> None:
         """Initialize the base coordinator."""
@@ -148,13 +150,13 @@ class UnifiBaseCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             _LOGGER.warning("Server error during update: %s", err)
         else:
-            _LOGGER.exception("API error during update")
+            _LOGGER.error("API error during update", exc_info=err)
         msg = f"API error: {err}"
         raise UpdateFailed(msg) from err
 
     def _handle_generic_error(self, err: Exception) -> None:
         """Handle generic error."""
         self._available = False
-        _LOGGER.exception("Unexpected error updating data")
+        _LOGGER.error("Unexpected error updating data", exc_info=err)
         msg = f"Error updating data: {err}"
         raise UpdateFailed(msg) from err

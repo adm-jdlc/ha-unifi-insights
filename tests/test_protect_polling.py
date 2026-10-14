@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for Protect-only console polling and warning suppression."""
 
 from __future__ import annotations

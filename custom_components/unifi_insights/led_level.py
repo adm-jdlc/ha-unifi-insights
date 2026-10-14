@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Conversions for the UniFi Protect floodlight LED level (1-6)."""
 
 from __future__ import annotations

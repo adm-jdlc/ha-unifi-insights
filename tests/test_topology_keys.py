@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for the per-entry topology node-id keys."""
 
 from __future__ import annotations

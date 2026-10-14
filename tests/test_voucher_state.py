@@ -164,7 +164,9 @@ def test_voucher_request_kwargs_clamps_into_spec_range() -> None:
 
 def test_voucher_to_record_variants() -> None:
     """voucher_to_record converts Voucher and dicts, rejecting invalid records."""
-    voucher = Voucher(id="v-1", code="1234567890", name="Test")
+    voucher = Voucher.model_validate(
+        {"id": "v-1", "code": "1234567890", "name": "Test"}
+    )
     rec = voucher_to_record(voucher)
     assert isinstance(rec, dict)
     assert rec["id"] == "v-1"
@@ -405,14 +407,16 @@ def test_refresh_latest_voucher_preserves_attributes() -> None:
 @pytest.mark.parametrize("shape", ["null", "missing", "snake"])
 def test_real_model_omission_preserves_deadline(shape: str) -> None:
     """Real dumps retain known timestamps when a refresh supplies unknown ones."""
-    known = Voucher(
-        id="v1",
-        code="1234567890",
-        activatedAt="2026-10-09T11:00:00Z",
-        expiresAt="2026-10-09T12:00:00Z",
+    known = Voucher.model_validate(
+        {
+            "id": "v1",
+            "code": "1234567890",
+            "activatedAt": "2026-10-09T11:00:00Z",
+            "expiresAt": "2026-10-09T12:00:00Z",
+        }
     )
     old = known.model_dump(by_alias=True, exclude_none=False)
-    omitted = Voucher(id="v1", code="1234567890").model_dump(
+    omitted = Voucher.model_validate({"id": "v1", "code": "1234567890"}).model_dump(
         by_alias=True, exclude_none=False
     )
     if shape == "missing":
@@ -424,11 +428,13 @@ def test_real_model_omission_preserves_deadline(shape: str) -> None:
     refreshed = refresh_latest_voucher(old, {"v1": omitted})
     assert refreshed["activatedAt"] == known.activated_at
     assert refreshed["expiresAt"] == known.expires_at
-    replacement = Voucher(
-        id="v1",
-        code="1234567890",
-        activatedAt="2026-10-09T13:00:00Z",
-        expiresAt="2026-10-09T14:00:00Z",
+    replacement = Voucher.model_validate(
+        {
+            "id": "v1",
+            "code": "1234567890",
+            "activatedAt": "2026-10-09T13:00:00Z",
+            "expiresAt": "2026-10-09T14:00:00Z",
+        }
     )
     incoming = replacement.model_dump(by_alias=True, exclude_none=False)
     assert (

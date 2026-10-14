@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Test fixtures for ha-unifi-insights integration tests."""
 
 from __future__ import annotations
@@ -421,6 +422,7 @@ async def init_integration(
     mock_network_client: MagicMock,
     mock_protect_client: MagicMock,
     mock_local_auth: MagicMock,
+    *,
     enable_custom_integrations,
 ) -> MockConfigEntry:
     """Set up the integration for testing."""

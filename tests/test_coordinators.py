@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Tests for multi-coordinator architecture (Platinum compliance)."""
 
 from __future__ import annotations
@@ -1595,6 +1596,7 @@ class TestUnifiConfigCoordinator:
         endpoint_attr: str,
         list_method: str,
         avail_method: str,
+        *,
         error: Exception,
     ) -> None:
         """Unsupported responses (403/404/200 non-JSON) store {} and keep available."""
@@ -8271,6 +8273,7 @@ class TestUnifiFacadeCoordinator:
         endpoint_attr: str,
         update_method: str,
         rule_id: str,
+        *,
         expected_msg: str,
     ) -> None:
         """API errors during rule toggles are wrapped in HomeAssistantError."""
@@ -8379,6 +8382,7 @@ class TestUnifiFacadeCoordinator:
         endpoint_attr: str,
         update_method: str,
         rule_id: str,
+        *,
         rule_key: str,
         name_key: str,
         rule_name: str,

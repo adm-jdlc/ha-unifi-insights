@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """
 Classify what a console's Network and Protect APIs say about a set of credentials.
 
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from contextlib import AbstractAsyncContextManager
 
+    from .api.access import UniFiAccessClient
     from .api.carrier_fabric import UniFiCarrierFabricClient
     from .api.innerspace import UniFiInnerSpaceClient
     from .api.network import UniFiNetworkClient
@@ -189,6 +191,28 @@ async def async_probe_innerspace(client: UniFiInnerSpaceClient) -> ProbeResult:
 
     _LOGGER.debug("InnerSpace API probe: no project or device records")
     return ProbeResult(ProbeStatus.EMPTY)
+
+
+async def async_probe_access(client: UniFiAccessClient) -> ProbeResult:
+    """
+    Probe the UniFi Access developer API by listing doors.
+
+    Access is optional and never gates setup, so every failure is a status
+    rather than an exception: a rejected token is AUTH_FAILED (401/403), a
+    missing console API or web page is UNSUPPORTED, and a connection or server
+    failure is UNREACHABLE. An empty door list is EMPTY, and any door means
+    AVAILABLE.
+    """
+    try:
+        doors = await client.doors.get_all()
+    except Exception as err:
+        status = classify_error(err)
+        _LOGGER.debug("Access API probe: %s (%r)", status, err)
+        return ProbeResult(status, err)
+    if not doors:
+        _LOGGER.debug("Access API probe: no doors")
+        return ProbeResult(ProbeStatus.EMPTY)
+    return ProbeResult(ProbeStatus.AVAILABLE)
 
 
 async def async_probe_with_client[ClientT](

@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Facade coordinator providing backward-compatible unified data view."""
 
 from __future__ import annotations
@@ -100,9 +101,9 @@ class UnifiFacadeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         protect_client: UniFiProtectClient | None,
         entry: ConfigEntry,
         config_coordinator: UnifiConfigCoordinator,
+        *,
         device_coordinator: UnifiDeviceCoordinator,
         protect_coordinator: UnifiProtectCoordinator | None,
-        *,
         innerspace_client: UniFiInnerSpaceClient | None = None,
         innerspace_coordinator: UnifiInsightsInnerSpaceCoordinator | None = None,
         site_manager_coordinator: UnifiInsightsSiteManagerCoordinator | None = None,

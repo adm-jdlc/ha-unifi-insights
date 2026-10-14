@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Historical site-level internet activity aggregation and fetching helpers."""
 
 from __future__ import annotations

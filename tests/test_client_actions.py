@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Unit tests for classic-API client actions and WiFi/known-client helpers.
 
 These cover the fixes for:

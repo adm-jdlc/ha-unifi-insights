@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Support for UniFi switches (Network and Protect)."""
 
 from __future__ import annotations
@@ -12,6 +13,13 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .access_entity import (
+    UnifiAccessEntity,
+    access_coordinator_for,
+    access_unique_id,
+    async_discover_access_entities,
+    console_device_info,
+)
 from .const import (
     ATTR_CAMERA_ID,
     ATTR_CAMERA_NAME,
@@ -48,6 +56,7 @@ if TYPE_CHECKING:
 
     from . import UnifiInsightsConfigEntry
     from .coordinators import UnifiFacadeCoordinator
+    from .coordinators.access import UnifiInsightsAccessCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -287,12 +296,85 @@ def _prune_orphaned_switch_entities(
             registry.async_remove(reg_entry.entity_id)
 
 
+EMERGENCY_MODES = ("lockdown", "evacuation")
+
+
+class UnifiAccessEmergencySwitch(UnifiAccessEntity, SwitchEntity):
+    """One console-wide emergency mode. Lockdown and Evacuation exclude each other."""
+
+    _feature = "emergency"
+
+    def __init__(self, coordinator: UnifiInsightsAccessCoordinator, mode: str) -> None:
+        """Create the switch for one emergency mode on the console device."""
+        super().__init__(coordinator)
+        self._mode = mode
+        self._attr_translation_key = f"access_emergency_{mode}"
+        self._attr_unique_id = access_unique_id(self._namespace, "emergency", mode)
+        self._attr_device_info = console_device_info(self._namespace)
+
+    def _is_present(self) -> bool:
+        """Return True once the console has reported its emergency state."""
+        return self.coordinator.data["emergency"] is not None
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the mode as the console last reported it, or None when unknown."""
+        emergency = self.coordinator.data["emergency"]
+        if emergency is None:
+            return None
+        value: bool | None = emergency[self._mode]
+        return value
+
+    async def async_turn_on(self, **kwargs: object) -> None:  # noqa: ARG002
+        """Turn this mode on; the coordinator clears the other mode."""
+        await async_call_coordinator_action(
+            self.coordinator,
+            "async_set_emergency_mode",
+            "Could not change the Access emergency mode",
+            self._mode,
+            enabled=True,
+        )
+
+    async def async_turn_off(self, **kwargs: object) -> None:  # noqa: ARG002
+        """Turn this mode off and keep the other mode as the console reports it."""
+        await async_call_coordinator_action(
+            self.coordinator,
+            "async_set_emergency_mode",
+            "Could not change the Access emergency mode",
+            self._mode,
+            enabled=False,
+        )
+
+
+@callback
+def async_setup_access_switches(
+    entry: UnifiInsightsConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Create the Lockdown and Evacuation switches when the console supports them."""
+    coordinator = access_coordinator_for(entry)
+    if coordinator is None:
+        return
+
+    async_discover_access_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        known_ids=set(),
+        keys=lambda: (
+            EMERGENCY_MODES if coordinator.feature_available("emergency") else ()
+        ),
+        make=lambda mode: UnifiAccessEmergencySwitch(coordinator, mode),
+    )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: UnifiInsightsConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up switches for UniFi integration."""
+    """Set up switches for UniFi Insights integration."""
+    # Access is set up before the Protect-dependent switches below.
+    async_setup_access_switches(entry, async_add_entities)
     coordinator: UnifiFacadeCoordinator = entry.runtime_data.coordinator
     client_control = entry.options.get(CONF_CLIENT_CONTROL, DEFAULT_CLIENT_CONTROL)
 

@@ -1,0 +1,723 @@
+# Copyright 2026 UniFi Insights contributors
+"""Config flow tests for the optional UniFi Access token, port and webhook state."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from homeassistant import config_entries
+from homeassistant.const import CONF_API_KEY, CONF_HOST, CONF_VERIFY_SSL
+from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.unifi_insights.api import (
+    UniFiAuthenticationError,
+    UniFiConnectionError,
+    UniFiNotFoundError,
+    UniFiValidationError,
+)
+from custom_components.unifi_insights.config_flow import (
+    _access_server_moved,
+    _clear_access_field,
+    _host_key,
+)
+from custom_components.unifi_insights.const import (
+    CONF_ACCESS_PORT,
+    CONF_ACCESS_TOKEN,
+    CONF_ACCESS_WEBHOOK,
+    CONF_ACCESS_WEBHOOK_ENDPOINT_ID,
+    CONF_ACCESS_WEBHOOK_ID,
+    CONF_ACCESS_WEBHOOK_SECRET,
+    CONF_CLEAR_ACCESS_TOKEN,
+    CONF_CONNECTION_TYPE,
+    CONF_CONSOLE_ID,
+    CONF_CONSOLE_NAME,
+    CONNECTION_TYPE_LOCAL,
+    DEFAULT_ACCESS_PORT,
+    DOMAIN,
+)
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
+pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
+
+_HOST = "https://192.168.1.1"
+_NEW_HOST = "https://192.168.2.1"
+_API_KEY = "network-api-key"
+_CONSOLE_MAC = "aa:bb:cc:dd:ee:ff"
+_OLD_TOKEN = "old-access-token"  # noqa: S105 - fixture token, not a credential
+_NEW_TOKEN = "new-access-token"  # noqa: S105 - fixture token, not a credential
+_WEBHOOK_STATE = {
+    CONF_ACCESS_WEBHOOK_ID: "receiver-id",
+    CONF_ACCESS_WEBHOOK_ENDPOINT_ID: "endpoint-id",
+    CONF_ACCESS_WEBHOOK_SECRET: "endpoint-secret",
+}
+
+
+def _network_cm() -> MagicMock:
+    """Network client context whose main validation succeeds with one site."""
+    client = MagicMock()
+    client.sites = MagicMock()
+    client.sites.get_all = AsyncMock(return_value=[MagicMock(id="default")])
+    client.devices = MagicMock()
+    client.devices.get_all = AsyncMock(return_value=[])
+    client.close = AsyncMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=client)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    return cm
+
+
+def _access_cm(get_all: AsyncMock) -> MagicMock:
+    """Access client context whose doors listing is controlled by the test."""
+    client = MagicMock()
+    client.doors = MagicMock()
+    client.doors.get_all = get_all
+    client.close = AsyncMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=client)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    return cm
+
+
+def _failing_cm() -> MagicMock:
+    """Application client context whose connection is rejected for the key."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(side_effect=UniFiAuthenticationError("bad key"))
+    cm.__aexit__ = AsyncMock(return_value=None)
+    return cm
+
+
+def _doors_ok() -> AsyncMock:
+    return AsyncMock(return_value=[MagicMock(id="door-1")])
+
+
+@pytest.fixture(autouse=True)
+def _no_entry_setup():
+    """Keep entry setup and reload from opening sockets."""
+    with patch(
+        "custom_components.unifi_insights.async_setup_entry",
+        return_value=True,
+    ):
+        yield
+
+
+@pytest.fixture
+def network_cm():
+    """Patch the Network client used for main local validation."""
+    cm = _network_cm()
+    with (
+        patch(
+            "custom_components.unifi_insights.config_flow.UniFiNetworkClient",
+            return_value=cm,
+        ),
+        patch("custom_components.unifi_insights.config_flow.LocalAuth"),
+    ):
+        yield cm
+
+
+@pytest.fixture
+def access_client_cls():
+    """Patch the Access client class; tests set the doors result per case."""
+    with patch(
+        "custom_components.unifi_insights.config_flow.UniFiAccessClient",
+        return_value=_access_cm(_doors_ok()),
+    ) as cls:
+        yield cls
+
+
+@pytest.fixture
+def remove_webhook():
+    """Patch the remote webhook cleanup and record the entry data it saw."""
+    seen: list[dict[str, Any]] = []
+
+    async def _record(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+        seen.append(dict(entry.data))
+
+    with patch(
+        "custom_components.unifi_insights.access_webhook.async_remove_access_webhook",
+        side_effect=_record,
+    ) as mock:
+        mock.seen = seen
+        yield mock
+
+
+def _set_access_result(access_client_cls: MagicMock, get_all: AsyncMock) -> None:
+    access_client_cls.return_value = _access_cm(get_all)
+
+
+async def _start_local_flow(hass: HomeAssistant) -> dict[str, Any]:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL}
+    )
+
+
+def _local_input(**extra: Any) -> dict[str, Any]:
+    return {
+        CONF_HOST: _HOST,
+        CONF_API_KEY: _API_KEY,
+        CONF_VERIFY_SSL: False,
+        **extra,
+    }
+
+
+def _existing_entry(
+    *,
+    token: str | None = _OLD_TOKEN,
+    webhook: bool = True,
+    host: str = _HOST,
+    port: int | None = None,
+) -> MockConfigEntry:
+    data: dict[str, Any] = {
+        CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+        CONF_HOST: host,
+        CONF_API_KEY: _API_KEY,
+        CONF_VERIFY_SSL: False,
+        CONF_CONSOLE_ID: _CONSOLE_MAC,
+    }
+    if token is not None:
+        data[CONF_ACCESS_TOKEN] = token
+    if port is not None:
+        data[CONF_ACCESS_PORT] = port
+    if webhook and token is not None:
+        data.update(_WEBHOOK_STATE)
+    return MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=_CONSOLE_MAC,
+        title="UniFi Insights (Local)",
+        data=data,
+    )
+
+
+async def _reconfigure(
+    hass: HomeAssistant, entry: MockConfigEntry, user_input: dict[str, Any]
+) -> dict[str, Any]:
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={
+            "source": config_entries.SOURCE_RECONFIGURE,
+            "entry_id": entry.entry_id,
+        },
+    )
+    assert result["type"] == FlowResultType.FORM
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=user_input
+    )
+
+
+class TestHostComparison:
+    """Host identity used to decide whether the Access server has moved."""
+
+    @pytest.mark.parametrize("host", [None, "", "   ", 5])
+    def test_unusable_host_has_no_key(self, host: object) -> None:
+        assert _host_key(host) is None
+
+    @pytest.mark.parametrize(
+        ("host", "expected"),
+        [
+            ("https://Console.Local:8443", "console.local"),
+            ("192.168.1.1", "192.168.1.1"),
+            ("[fd00::1]", "fd00::1"),
+        ],
+    )
+    def test_host_key_is_lower_cased_name(self, host: str, expected: str) -> None:
+        assert _host_key(host) == expected
+
+    def test_same_host_different_case_is_not_a_move(self) -> None:
+        entry = _existing_entry(host="https://Console.Local")
+        assert (
+            _access_server_moved(entry, "https://console.local", DEFAULT_ACCESS_PORT)
+            is False
+        )
+
+    def test_different_port_is_a_move(self) -> None:
+        entry = _existing_entry(port=8443)
+        assert _access_server_moved(entry, _HOST, 9443)
+
+    def test_clear_field_only_offered_with_stored_token(self) -> None:
+        assert _clear_access_field(_existing_entry()) != {}
+        assert _clear_access_field(_existing_entry(token=None)) == {}
+
+
+class TestLocalSetupAccess:
+    """Adding a local entry, with and without an Access token."""
+
+    async def test_omitted_token_creates_entry_without_access(
+        self, hass: HomeAssistant, network_cm, access_client_cls
+    ) -> None:
+        result = await _start_local_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input=_local_input()
+        )
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert CONF_ACCESS_TOKEN not in result["data"]
+        assert CONF_ACCESS_PORT not in result["data"]
+        access_client_cls.assert_not_called()
+
+    async def test_blank_token_is_treated_as_omitted(
+        self, hass: HomeAssistant, network_cm, access_client_cls
+    ) -> None:
+        result = await _start_local_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input=_local_input(**{CONF_ACCESS_TOKEN: "   "})
+        )
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert CONF_ACCESS_TOKEN not in result["data"]
+        access_client_cls.assert_not_called()
+
+    async def test_valid_token_is_stripped_and_stored_with_default_port(
+        self, hass: HomeAssistant, network_cm, access_client_cls
+    ) -> None:
+        result = await _start_local_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=_local_input(**{CONF_ACCESS_TOKEN: f"  {_NEW_TOKEN} "}),
+        )
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_ACCESS_TOKEN] == _NEW_TOKEN
+        assert result["data"][CONF_ACCESS_PORT] == DEFAULT_ACCESS_PORT
+        assert access_client_cls.call_args.kwargs["token"] == _NEW_TOKEN
+        assert access_client_cls.call_args.kwargs["host"] == _HOST
+        assert access_client_cls.call_args.kwargs["verify_ssl"] is False
+
+    async def test_custom_port_is_probed_and_stored(
+        self, hass: HomeAssistant, network_cm, access_client_cls
+    ) -> None:
+        result = await _start_local_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=_local_input(
+                **{CONF_ACCESS_TOKEN: _NEW_TOKEN, CONF_ACCESS_PORT: 8443}
+            ),
+        )
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_ACCESS_PORT] == 8443
+        assert access_client_cls.call_args.kwargs["port"] == 8443
+
+    async def test_rejected_token_shows_error_then_recovers(
+        self, hass: HomeAssistant, network_cm, access_client_cls
+    ) -> None:
+        _set_access_result(
+            access_client_cls,
+            AsyncMock(side_effect=UniFiAuthenticationError("rejected")),
+        )
+        result = await _start_local_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=_local_input(**{CONF_ACCESS_TOKEN: _OLD_TOKEN}),
+        )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {CONF_ACCESS_TOKEN: "access_invalid_auth"}
+
+        _set_access_result(access_client_cls, _doors_ok())
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=_local_input(**{CONF_ACCESS_TOKEN: _NEW_TOKEN}),
+        )
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_ACCESS_TOKEN] == _NEW_TOKEN
+
+    async def test_unreachable_access_shows_cannot_connect(
+        self, hass: HomeAssistant, network_cm, access_client_cls
+    ) -> None:
+        _set_access_result(
+            access_client_cls,
+            AsyncMock(side_effect=UniFiConnectionError("refused")),
+        )
+        result = await _start_local_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=_local_input(**{CONF_ACCESS_TOKEN: _NEW_TOKEN}),
+        )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {CONF_ACCESS_TOKEN: "access_cannot_connect"}
+
+    async def test_missing_access_api_shows_unsupported(
+        self, hass: HomeAssistant, network_cm, access_client_cls
+    ) -> None:
+        _set_access_result(
+            access_client_cls,
+            AsyncMock(side_effect=UniFiNotFoundError("missing", status_code=404)),
+        )
+        result = await _start_local_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=_local_input(**{CONF_ACCESS_TOKEN: _NEW_TOKEN}),
+        )
+        assert result["errors"] == {CONF_ACCESS_TOKEN: "access_unsupported"}
+
+    async def test_empty_access_listing_is_accepted(
+        self, hass: HomeAssistant, network_cm, access_client_cls
+    ) -> None:
+        _set_access_result(access_client_cls, AsyncMock(return_value=[]))
+        result = await _start_local_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=_local_input(**{CONF_ACCESS_TOKEN: _NEW_TOKEN}),
+        )
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+
+    async def test_rejected_client_construction_shows_unsupported(
+        self, hass: HomeAssistant, network_cm, access_client_cls
+    ) -> None:
+        access_client_cls.side_effect = UniFiValidationError("bad port")
+        result = await _start_local_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=_local_input(**{CONF_ACCESS_TOKEN: _NEW_TOKEN}),
+        )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {CONF_ACCESS_TOKEN: "access_unsupported"}
+
+    async def test_console_identity_is_stored_with_access_token(
+        self, hass: HomeAssistant, network_cm, access_client_cls
+    ) -> None:
+        result = await _start_local_flow(hass)
+        with patch(
+            "custom_components.unifi_insights.config_flow.resolve_console_identity",
+            return_value=(_CONSOLE_MAC, "Dream Router"),
+        ):
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"],
+                user_input=_local_input(**{CONF_ACCESS_TOKEN: _NEW_TOKEN}),
+            )
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_CONSOLE_ID] == _CONSOLE_MAC
+        assert result["data"][CONF_CONSOLE_NAME] == "Dream Router"
+        assert result["data"][CONF_ACCESS_TOKEN] == _NEW_TOKEN
+
+    async def test_failed_main_connection_skips_access_probe(
+        self, hass: HomeAssistant, access_client_cls
+    ) -> None:
+        with (
+            patch(
+                "custom_components.unifi_insights.config_flow.UniFiNetworkClient",
+                return_value=_failing_cm(),
+            ),
+            patch("custom_components.unifi_insights.config_flow.LocalAuth"),
+            patch(
+                "custom_components.unifi_insights.config_flow.UniFiProtectClient",
+                return_value=_failing_cm(),
+            ),
+        ):
+            result = await _start_local_flow(hass)
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"],
+                user_input=_local_input(**{CONF_ACCESS_TOKEN: _NEW_TOKEN}),
+            )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {CONF_API_KEY: "invalid_auth"}
+        access_client_cls.assert_not_called()
+
+
+class TestReconfigureAccess:
+    """Local reconfigure: preservation, rotation, clear and server moves."""
+
+    async def test_missing_token_field_keeps_access_fields(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry(port=8443)
+        result = await _reconfigure(hass, entry, _local_input())
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "reconfigure_successful"
+        assert entry.data[CONF_ACCESS_TOKEN] == _OLD_TOKEN
+        assert entry.data[CONF_ACCESS_PORT] == 8443
+        assert entry.data[CONF_ACCESS_WEBHOOK_ID] == "receiver-id"
+        assert entry.data[CONF_ACCESS_WEBHOOK_SECRET] == "endpoint-secret"
+        access_client_cls.assert_not_called()
+        remove_webhook.assert_not_called()
+
+    async def test_reconfigure_rejects_different_hardware_identity(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry()
+        before = dict(entry.data)
+        with patch(
+            "custom_components.unifi_insights.config_flow.resolve_console_identity",
+            return_value=("11:22:33:44:55:66", "Other Router"),
+        ):
+            result = await _reconfigure(hass, entry, _local_input())
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "account_mismatch"
+        assert dict(entry.data) == before
+        remove_webhook.assert_not_called()
+
+    async def test_reconfigure_adopting_a_mac_owned_by_another_entry_aborts(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        legacy = MockConfigEntry(
+            domain=DOMAIN,
+            unique_id="192.168.1.1",
+            title="UniFi Insights (Local)",
+            data={
+                CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+                CONF_HOST: _HOST,
+                CONF_API_KEY: _API_KEY,
+                CONF_VERIFY_SSL: False,
+                CONF_ACCESS_TOKEN: _OLD_TOKEN,
+            },
+        )
+        owner = MockConfigEntry(
+            domain=DOMAIN,
+            unique_id="11:22:33:44:55:66",
+            title="Other site",
+            data={CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL},
+        )
+        owner.add_to_hass(hass)
+        with patch(
+            "custom_components.unifi_insights.config_flow.resolve_console_identity",
+            return_value=("11:22:33:44:55:66", "Other Router"),
+        ):
+            result = await _reconfigure(hass, legacy, _local_input())
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "already_configured"
+        assert legacy.data[CONF_ACCESS_TOKEN] == _OLD_TOKEN
+
+    async def test_token_rotation_on_same_server_keeps_webhook_state(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry()
+        result = await _reconfigure(
+            hass,
+            entry,
+            _local_input(**{CONF_ACCESS_TOKEN: _NEW_TOKEN}),
+        )
+        assert result["type"] == FlowResultType.ABORT
+        assert entry.data[CONF_ACCESS_TOKEN] == _NEW_TOKEN
+        assert entry.data[CONF_ACCESS_PORT] == DEFAULT_ACCESS_PORT
+        assert entry.data[CONF_ACCESS_WEBHOOK_ENDPOINT_ID] == "endpoint-id"
+        assert entry.data[CONF_ACCESS_WEBHOOK_SECRET] == "endpoint-secret"
+        remove_webhook.assert_not_called()
+
+    async def test_explicit_clear_removes_remote_webhook_first(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry(port=8443)
+        result = await _reconfigure(
+            hass,
+            entry,
+            _local_input(**{CONF_CLEAR_ACCESS_TOKEN: True}),
+        )
+        assert result["type"] == FlowResultType.ABORT
+        remove_webhook.assert_awaited_once()
+        # The cleanup saw the original entry, so it could reach the old server.
+        assert remove_webhook.seen[0][CONF_ACCESS_TOKEN] == _OLD_TOKEN
+        assert remove_webhook.seen[0][CONF_ACCESS_WEBHOOK_ENDPOINT_ID] == "endpoint-id"
+        for key in (
+            CONF_ACCESS_TOKEN,
+            CONF_ACCESS_PORT,
+            CONF_ACCESS_WEBHOOK_ID,
+            CONF_ACCESS_WEBHOOK_ENDPOINT_ID,
+            CONF_ACCESS_WEBHOOK_SECRET,
+        ):
+            assert key not in entry.data
+        access_client_cls.assert_not_called()
+
+    async def test_clear_without_webhook_state_drops_token_without_remote_call(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry(webhook=False)
+        result = await _reconfigure(
+            hass,
+            entry,
+            _local_input(**{CONF_CLEAR_ACCESS_TOKEN: True}),
+        )
+        assert result["type"] == FlowResultType.ABORT
+        remove_webhook.assert_not_called()
+        assert CONF_ACCESS_TOKEN not in entry.data
+
+    async def test_typed_token_wins_over_clear_flag(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry()
+        result = await _reconfigure(
+            hass,
+            entry,
+            _local_input(
+                **{CONF_ACCESS_TOKEN: _NEW_TOKEN, CONF_CLEAR_ACCESS_TOKEN: True}
+            ),
+        )
+        assert result["type"] == FlowResultType.ABORT
+        assert entry.data[CONF_ACCESS_TOKEN] == _NEW_TOKEN
+        remove_webhook.assert_not_called()
+
+    async def test_host_move_revalidates_stored_token_then_cleans_up(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry()
+        result = await _reconfigure(hass, entry, _local_input(**{CONF_HOST: _NEW_HOST}))
+        assert result["type"] == FlowResultType.ABORT
+        # The stored token was probed against the new server.
+        assert access_client_cls.call_args.kwargs["host"] == _NEW_HOST
+        assert access_client_cls.call_args.kwargs["token"] == _OLD_TOKEN
+        remove_webhook.assert_awaited_once()
+        assert remove_webhook.seen[0][CONF_HOST] == _HOST
+        assert entry.data[CONF_HOST] == _NEW_HOST
+        assert entry.data[CONF_ACCESS_TOKEN] == _OLD_TOKEN
+        assert entry.data[CONF_ACCESS_PORT] == DEFAULT_ACCESS_PORT
+        assert CONF_ACCESS_WEBHOOK_ENDPOINT_ID not in entry.data
+        assert CONF_ACCESS_WEBHOOK_SECRET not in entry.data
+
+    async def test_rotation_without_webhook_keys_leaves_no_webhook_state(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry(webhook=False)
+        result = await _reconfigure(
+            hass,
+            entry,
+            _local_input(**{CONF_ACCESS_TOKEN: _NEW_TOKEN}),
+        )
+        assert result["type"] == FlowResultType.ABORT
+        assert entry.data[CONF_ACCESS_TOKEN] == _NEW_TOKEN
+        assert CONF_ACCESS_WEBHOOK_ID not in entry.data
+        remove_webhook.assert_not_called()
+
+    async def test_port_move_on_same_host_cleans_up(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry(port=12445)
+        result = await _reconfigure(
+            hass,
+            entry,
+            _local_input(**{CONF_ACCESS_PORT: 9443}),
+        )
+        assert result["type"] == FlowResultType.ABORT
+        remove_webhook.assert_awaited_once()
+        assert entry.data[CONF_ACCESS_PORT] == 9443
+        assert CONF_ACCESS_WEBHOOK_ID not in entry.data
+
+    async def test_rejected_stored_token_after_move_keeps_registration(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        _set_access_result(
+            access_client_cls,
+            AsyncMock(side_effect=UniFiAuthenticationError("rejected")),
+        )
+        entry = _existing_entry()
+        before = dict(entry.data)
+        result = await _reconfigure(hass, entry, _local_input(**{CONF_HOST: _NEW_HOST}))
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {CONF_ACCESS_TOKEN: "access_invalid_auth"}
+        remove_webhook.assert_not_called()
+        assert dict(entry.data) == before
+
+    async def test_rejected_new_token_after_move_keeps_registration(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        _set_access_result(
+            access_client_cls,
+            AsyncMock(side_effect=UniFiConnectionError("refused")),
+        )
+        entry = _existing_entry()
+        before = dict(entry.data)
+        result = await _reconfigure(
+            hass,
+            entry,
+            _local_input(**{CONF_HOST: _NEW_HOST, CONF_ACCESS_TOKEN: _NEW_TOKEN}),
+        )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {CONF_ACCESS_TOKEN: "access_cannot_connect"}
+        remove_webhook.assert_not_called()
+        assert dict(entry.data) == before
+
+    async def test_rejected_main_connection_keeps_registration(
+        self, hass: HomeAssistant, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry()
+        before = dict(entry.data)
+        with (
+            patch(
+                "custom_components.unifi_insights.config_flow.UniFiNetworkClient",
+                return_value=_failing_cm(),
+            ),
+            patch("custom_components.unifi_insights.config_flow.LocalAuth"),
+            patch(
+                "custom_components.unifi_insights.config_flow.UniFiProtectClient",
+                return_value=_failing_cm(),
+            ),
+        ):
+            result = await _reconfigure(
+                hass,
+                entry,
+                _local_input(**{CONF_HOST: _NEW_HOST, CONF_CLEAR_ACCESS_TOKEN: True}),
+            )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {CONF_API_KEY: "invalid_auth"}
+        remove_webhook.assert_not_called()
+        access_client_cls.assert_not_called()
+        assert dict(entry.data) == before
+
+    async def test_no_stored_token_host_move_updates_only_host(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry(token=None)
+        result = await _reconfigure(hass, entry, _local_input(**{CONF_HOST: _NEW_HOST}))
+        assert result["type"] == FlowResultType.ABORT
+        access_client_cls.assert_not_called()
+        remove_webhook.assert_not_called()
+        assert CONF_ACCESS_TOKEN not in entry.data
+
+
+class TestReauthAccess:
+    """Reauth replaces the API key and keeps Access fields and webhook state."""
+
+    async def test_reauth_preserves_access_fields(
+        self, hass: HomeAssistant, network_cm, access_client_cls, remove_webhook
+    ) -> None:
+        entry = _existing_entry(port=8443)
+        entry.add_to_hass(hass)
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+        assert result["step_id"] == "reauth_confirm"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CONF_API_KEY: "rotated-key"}
+        )
+        assert result["type"] == FlowResultType.ABORT
+        assert entry.data[CONF_API_KEY] == "rotated-key"
+        assert entry.data[CONF_ACCESS_TOKEN] == _OLD_TOKEN
+        assert entry.data[CONF_ACCESS_PORT] == 8443
+        assert entry.data[CONF_ACCESS_WEBHOOK_ENDPOINT_ID] == "endpoint-id"
+        access_client_cls.assert_not_called()
+        remove_webhook.assert_not_called()
+
+
+class TestOptionsAccessWebhook:
+    """The Access webhook toggle is offered only for local entries with a token."""
+
+    async def test_toggle_shown_and_saved_for_token_entry(
+        self, hass: HomeAssistant
+    ) -> None:
+        entry = _existing_entry()
+        entry.add_to_hass(hass)
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        assert result["type"] == FlowResultType.FORM
+        assert CONF_ACCESS_WEBHOOK in {
+            key.schema for key in result["data_schema"].schema
+        }
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], user_input={CONF_ACCESS_WEBHOOK: True}
+        )
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_ACCESS_WEBHOOK] is True
+
+    async def test_toggle_hidden_without_token(self, hass: HomeAssistant) -> None:
+        entry = _existing_entry(token=None)
+        entry.add_to_hass(hass)
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        assert result["type"] == FlowResultType.FORM
+        assert CONF_ACCESS_WEBHOOK not in {
+            key.schema for key in result["data_schema"].schema
+        }

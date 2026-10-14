@@ -1,3 +1,4 @@
+# Copyright 2026 UniFi Insights contributors
 """Data transformation and MAC correlation helpers for UniFi InnerSpace."""
 
 from __future__ import annotations
