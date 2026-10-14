@@ -42,9 +42,10 @@ from custom_components.unifi_insights.const import (
     DEFAULT_ACCESS_PORT,
     DOMAIN,
 )
+from custom_components.unifi_insights.helpers import SiteEntityIdentityError
 
 if TYPE_CHECKING:
-    from homeassistant.config_entries import ConfigFlowResult
+    from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
     from homeassistant.core import HomeAssistant
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
@@ -844,6 +845,131 @@ class TestReconfigureReceiverCleanup:
         assert CONF_ACCESS_TOKEN not in entry.data
         assert CONF_ACCESS_WEBHOOK_ID not in entry.data
         assert not await _receiver_answers(hass, hass_client, calls)
+
+
+@pytest.mark.usefixtures("network_cm", "access_client_cls")
+class TestReconfigureRecoveryReload:
+    """A save that fails after receiver cleanup asks Home Assistant to reload."""
+
+    async def test_identity_conflict_after_move_cleanup_schedules_reload(
+        self, hass: HomeAssistant, remote_console
+    ) -> None:
+        entry = _existing_entry()
+        with (
+            patch.object(hass.config_entries, "async_schedule_reload") as schedule,
+            patch(
+                "custom_components.unifi_insights.config_flow.async_rekey_site_entities",
+                side_effect=SiteEntityIdentityError("forced identity conflict"),
+            ),
+        ):
+            result = await _reconfigure(
+                hass, entry, _local_input(**{CONF_HOST: _NEW_HOST})
+            )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {"base": "site_entity_identity_conflict"}
+        remote_console.webhooks.delete.assert_awaited_once_with("endpoint-id")
+        assert entry.data[CONF_HOST] == _HOST
+        schedule.assert_called_once_with(entry.entry_id)
+
+    async def test_identity_conflict_skips_reload_when_entry_is_gone(
+        self, hass: HomeAssistant, remote_console
+    ) -> None:
+        entry = _existing_entry()
+        conflict = False
+        real_get_entry = hass.config_entries.async_get_entry
+
+        def _get_entry(entry_id: str) -> ConfigEntry | None:
+            # The entry disappears once the identity conflict has been raised.
+            return None if conflict else real_get_entry(entry_id)
+
+        def _conflict(*_args: Any, **_kwargs: Any) -> None:
+            nonlocal conflict
+            conflict = True
+            msg = "forced identity conflict"
+            raise SiteEntityIdentityError(msg)
+
+        with (
+            patch.object(hass.config_entries, "async_schedule_reload") as schedule,
+            patch.object(
+                hass.config_entries, "async_get_entry", side_effect=_get_entry
+            ),
+            patch(
+                "custom_components.unifi_insights.config_flow.async_rekey_site_entities",
+                side_effect=_conflict,
+            ),
+        ):
+            result = await _reconfigure(
+                hass, entry, _local_input(**{CONF_HOST: _NEW_HOST})
+            )
+        assert result["errors"] == {"base": "site_entity_identity_conflict"}
+        remote_console.webhooks.delete.assert_awaited_once_with("endpoint-id")
+        schedule.assert_not_called()
+
+    async def test_save_failure_after_refused_clear_cleanup_schedules_reload(
+        self, hass: HomeAssistant, remote_console
+    ) -> None:
+        entry = _existing_entry(port=8443)
+        remote_console.webhooks.delete.side_effect = UniFiResponseError(
+            "refused", status_code=500
+        )
+        with (
+            patch.object(hass.config_entries, "async_schedule_reload") as schedule,
+            patch(
+                "homeassistant.config_entries.ConfigFlow.async_update_reload_and_abort",
+                side_effect=RuntimeError("storage unavailable"),
+            ),
+        ):
+            result = await _reconfigure(
+                hass, entry, _local_input(**{CONF_CLEAR_ACCESS_TOKEN: True})
+            )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {"base": "unknown"}
+        assert entry.data[CONF_ACCESS_TOKEN] == _OLD_TOKEN
+        schedule.assert_called_once_with(entry.entry_id)
+
+    async def test_refused_move_cleanup_does_not_schedule_reload(
+        self, hass: HomeAssistant, remote_console
+    ) -> None:
+        entry = _existing_entry()
+        remote_console.webhooks.delete.side_effect = UniFiResponseError(
+            "refused", status_code=500
+        )
+        with patch.object(hass.config_entries, "async_schedule_reload") as schedule:
+            result = await _reconfigure(
+                hass, entry, _local_input(**{CONF_HOST: _NEW_HOST})
+            )
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "cannot_connect"
+        schedule.assert_not_called()
+
+    async def test_cleanup_exception_does_not_schedule_reload(
+        self, hass: HomeAssistant, remove_webhook
+    ) -> None:
+        entry = _existing_entry()
+        remove_webhook.side_effect = RuntimeError("cleanup broke")
+        with patch.object(hass.config_entries, "async_schedule_reload") as schedule:
+            result = await _reconfigure(
+                hass, entry, _local_input(**{CONF_HOST: _NEW_HOST})
+            )
+        assert result["errors"] == {"base": "unknown"}
+        schedule.assert_not_called()
+
+    async def test_save_failure_without_cleanup_does_not_schedule_reload(
+        self, hass: HomeAssistant
+    ) -> None:
+        entry = _existing_entry(token=None)
+        with (
+            patch.object(hass.config_entries, "async_schedule_reload") as schedule,
+            patch(
+                "homeassistant.config_entries.ConfigFlow.async_update_reload_and_abort",
+                side_effect=RuntimeError("storage unavailable"),
+            ),
+        ):
+            result = await _reconfigure(
+                hass, entry, _local_input(**{CONF_HOST: _NEW_HOST})
+            )
+        assert result["errors"] == {"base": "unknown"}
+        schedule.assert_not_called()
 
 
 class TestReauthAccess:

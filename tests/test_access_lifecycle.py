@@ -3,12 +3,17 @@
 
 import asyncio
 import logging
+import time
 from datetime import timedelta
+from http import HTTPStatus
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant import config_entries
 from homeassistant.components import webhook
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import CONF_API_KEY, CONF_HOST, CONF_VERIFY_SSL
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
@@ -33,11 +38,14 @@ from custom_components.unifi_insights.const import (
     CONF_ACCESS_TOKEN,
     CONF_ACCESS_WEBHOOK,
     CONF_ACCESS_WEBHOOK_ID,
+    CONF_ACCESS_WEBHOOK_SECRET,
     CONF_CONSOLE_ID,
     DOMAIN,
     SCAN_INTERVAL_ACCESS,
 )
+from custom_components.unifi_insights.helpers import SiteEntityIdentityError
 from tests.test_access_coordinator import DEVICES, DOORS, NAMESPACE, _client
+from tests.test_access_webhook import _sign, _unlock_event
 
 
 @pytest.mark.parametrize(
@@ -672,3 +680,124 @@ async def test_unexpected_access_setup_error_closes_client_and_keeps_other_apps(
     assert "test-access-token" not in caplog.text
     assert ("Error closing Access client (RuntimeError)" in caplog.text) is close_fails
     assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+
+
+async def test_identity_conflict_after_move_cleanup_reloads_and_restores_receiver(
+    *,
+    hass,
+    hass_client,
+    mock_config_entry,
+    mock_network_client,
+    mock_protect_client,
+    mock_local_auth,
+    enable_custom_integrations,
+):
+    """A move refused after remote cleanup reloads the entry and re-registers it.
+
+    The identity conflict is injected: async_rekey_site_entities raises after
+    the old endpoint was deleted and its receiver unregistered. Entry setup,
+    the webhook registration, the scheduled reload and the receiver it registers
+    are all the real Home Assistant paths.
+    """
+    client = _client(doors=DOORS, devices=DEVICES)
+    client.webhooks.get_all = AsyncMock(return_value=[])
+    client.webhooks.create = AsyncMock(
+        side_effect=[
+            AccessWebhookEndpoint.model_validate(
+                {"id": "endpoint-old", "secret": "old-secret"}
+            ),
+            AccessWebhookEndpoint.model_validate(
+                {"id": "endpoint-new", "secret": "new-secret"}
+            ),
+        ]
+    )
+    client.webhooks.delete = AsyncMock()
+    client.close = AsyncMock()
+    url = "http://ha.test.local:8123/api/webhook/test-recovery"
+
+    async def _run_socket(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    def _deliver(http, secret: str):
+        body = _unlock_event()
+        return http.post(
+            webhook.async_generate_path(stored_id),
+            data=body,
+            headers={
+                "Signature": _sign(body, timestamp=int(time.time()), secret=secret)
+            },
+        )
+
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        data={
+            **mock_config_entry.data,
+            CONF_ACCESS_TOKEN: "test-access-token",
+            CONF_CONSOLE_ID: NAMESPACE,
+        },
+        options={**mock_config_entry.options, CONF_ACCESS_WEBHOOK: True},
+    )
+    with (
+        patch(
+            "custom_components.unifi_insights.UniFiAccessClient", return_value=client
+        ),
+        patch(
+            "custom_components.unifi_insights.config_flow.UniFiAccessClient",
+            return_value=client,
+        ),
+        patch(
+            "custom_components.unifi_insights.access_webhook.UniFiAccessClient",
+            return_value=client,
+        ),
+        patch(
+            "custom_components.unifi_insights.access_webhook.webhook.async_generate_url",
+            return_value=url,
+        ),
+        patch(
+            "custom_components.unifi_insights.coordinators.access."
+            "AccessNotificationSocket.run",
+            side_effect=_run_socket,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        stored_id = mock_config_entry.data[CONF_ACCESS_WEBHOOK_ID]
+        http = await hass_client()
+        assert (await _deliver(http, "old-secret")).status == HTTPStatus.OK
+
+        with patch(
+            "custom_components.unifi_insights.config_flow.async_rekey_site_entities",
+            side_effect=SiteEntityIdentityError("forced identity conflict"),
+        ):
+            result = await hass.config_entries.flow.async_init(
+                DOMAIN,
+                context={
+                    "source": config_entries.SOURCE_RECONFIGURE,
+                    "entry_id": mock_config_entry.entry_id,
+                },
+            )
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"],
+                user_input={
+                    CONF_HOST: "https://192.168.2.1",
+                    CONF_API_KEY: "test_api_key",
+                    CONF_VERIFY_SSL: False,
+                },
+            )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {"base": "site_entity_identity_conflict"}
+        assert mock_config_entry.data[CONF_HOST] == "https://192.168.1.1"
+        client.webhooks.delete.assert_awaited_once_with("endpoint-old")
+
+        # The scheduled reload registers the receiver again, with a new endpoint.
+        await hass.async_block_till_done()
+
+        assert mock_config_entry.state is ConfigEntryState.LOADED
+        assert mock_config_entry.data[CONF_ACCESS_WEBHOOK_ID] == stored_id
+        assert mock_config_entry.data[CONF_ACCESS_WEBHOOK_SECRET] == "new-secret"
+        assert client.webhooks.create.await_count == 2
+        assert (await _deliver(http, "old-secret")).status != HTTPStatus.OK
+        assert (await _deliver(http, "new-secret")).status == HTTPStatus.OK
+        assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+        await hass.async_block_till_done()

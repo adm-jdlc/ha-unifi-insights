@@ -551,6 +551,8 @@ the endpoint metadata is kept so a later entry reload can retry deletion.
 Changing the host or port while keeping Access configured first deletes the old
 webhook endpoint. If deletion fails, reconfiguration stops and retains the old
 receiver and connection settings so you can retry after restoring connectivity.
+If an identity conflict or save error occurs after the receiver is retired,
+The integration schedules an entry reload to rebuild its webhook.
 Check the old token's permissions if the console rejects deletion. If cleanup is
 no longer possible, clear the Access token first, remove the remaining endpoint
 in Access, then reconfigure the host or port.

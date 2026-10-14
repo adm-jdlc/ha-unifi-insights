@@ -1132,6 +1132,7 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
         if new_id:
             new_data[CONF_CONSOLE_ID] = new_id
 
+        cleanup_ran = False
         if cleanup:
             # Remote cleanup runs after the new connection validated and
             # immediately before the save, so a rejected reconfigure keeps the
@@ -1145,16 +1146,28 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
             removed = await async_remove_access_webhook(
                 self.hass, entry, keep_receiver_on_failure=keep_receiver
             )
+            cleanup_ran = True
             if keep_receiver and not removed:
                 return self.async_abort(reason="cannot_connect")
         new_data.update(access_data)
-        return self._async_update_site_entry_and_abort(
-            entry,
-            new_data,
-            new_id,
-            unique_id=new_id or entry.unique_id,
-            reason="reconfigure_successful",
-        )
+        try:
+            return self._async_update_site_entry_and_abort(
+                entry,
+                new_data,
+                new_id,
+                unique_id=new_id or entry.unique_id,
+                reason="reconfigure_successful",
+            )
+        except Exception:
+            # The receiver is already unregistered, so the unchanged entry must
+            # reload to register it again. The entry check skips a removed or
+            # replaced entry, which would fail the reload and hide this error.
+            if (
+                cleanup_ran
+                and self.hass.config_entries.async_get_entry(entry.entry_id) is entry
+            ):
+                self.hass.config_entries.async_schedule_reload(entry.entry_id)
+            raise
 
     async def async_step_reconfigure_carrier_fabric(
         self, user_input: dict[str, Any] | None = None
