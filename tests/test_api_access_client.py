@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 
 import pytest
+from aiohttp import ClientSession
 from yarl import URL
 
 from custom_components.unifi_insights.api.access import (
@@ -22,6 +24,9 @@ from custom_components.unifi_insights.api.exceptions import (
     UniFiResponseError,
     UniFiValidationError,
 )
+
+if TYPE_CHECKING:
+    from custom_components.unifi_insights.api.base import BaseUniFiClient
 
 _TOKEN = "super-secret-access-token"  # noqa: S105 - fixture token, not a credential
 
@@ -95,18 +100,29 @@ class FakeSession:
         return FakeRequest(self._responses.pop(0))
 
 
+def fake_session(*responses: FakeResponse) -> ClientSession:
+    """``ClientSession`` spec double that replays ``responses`` via ``FakeSession``."""
+    fake = FakeSession(*responses)
+    session = MagicMock(spec=ClientSession)
+    session.closed = False
+    session.request.side_effect = fake.request
+    session.calls = fake.calls
+    return session
+
+
+def recorded_calls(client: BaseUniFiClient) -> list[dict[str, Any]]:
+    session = client._session
+    assert isinstance(session, MagicMock)
+    return session.calls
+
+
 def _client(*responses: FakeResponse, **kwargs: Any) -> UniFiAccessClient:
     return UniFiAccessClient(
         token=kwargs.pop("token", _TOKEN),
         host=kwargs.pop("host", "192.168.1.1"),
-        session=FakeSession(*responses),
+        session=fake_session(*responses),
         **kwargs,
     )
-
-
-def _session(client: UniFiAccessClient) -> FakeSession:
-    assert isinstance(client._session, FakeSession)
-    return client._session
 
 
 class TestConstruction:
@@ -179,7 +195,7 @@ class TestAuth:
             verify_ssl=False,
         )
         await client._request("GET", "doors")
-        assert _session(client).calls[0]["kwargs"] == {"ssl": False}
+        assert recorded_calls(client)[0]["kwargs"] == {"ssl": False}
 
 
 class TestTransport:
@@ -271,5 +287,5 @@ class TestTransport:
     async def test_validate_connection_lists_doors(self) -> None:
         client = _client(FakeResponse(200, json.dumps({"code": "SUCCESS", "data": []})))
         assert await client.validate_connection() is True
-        assert _session(client).calls[0]["method"] == "GET"
-        assert _session(client).calls[0]["url"].endswith("/api/v1/developer/doors")
+        assert recorded_calls(client)[0]["method"] == "GET"
+        assert recorded_calls(client)[0]["url"].endswith("/api/v1/developer/doors")

@@ -11,7 +11,7 @@ import pytest
 
 from custom_components.unifi_insights.api.auth import ApiKeyAuth
 from custom_components.unifi_insights.api.base import BaseUniFiClient, _redact
-from tests.test_api_access_client import FakeResponse, FakeSession
+from tests.test_api_access_client import FakeResponse, fake_session, recorded_calls
 
 
 class _ProbeClient(BaseUniFiClient):
@@ -25,7 +25,7 @@ def _client(*responses: FakeResponse, **kwargs: Any) -> _ProbeClient:
     return _ProbeClient(
         auth=ApiKeyAuth(api_key="network-key"),
         base_url="https://192.168.1.1/",
-        session=FakeSession(*responses),
+        session=fake_session(*responses),
         **kwargs,
     )
 
@@ -53,7 +53,7 @@ class TestPutLogBody:
     async def test_put_sends_body_and_params_unchanged(self) -> None:
         client = _client(FakeResponse(200, json.dumps({"ok": True})))
         await client._put("doors/1/unlock", json_data={"a": 1}, params={"b": "2"})
-        call = client._session.calls[0]  # type: ignore[union-attr]
+        call = recorded_calls(client)[0]
         assert call["method"] == "PUT"
         assert call["json"] == {"a": 1}
         assert call["params"] == {"b": "2"}
@@ -73,7 +73,7 @@ class TestSslHook:
     async def test_default_hook_sends_no_ssl_argument(self) -> None:
         client = _client(FakeResponse(200, json.dumps({"ok": True})))
         await client._request("GET", "devices")
-        assert client._session.calls[0]["kwargs"] == {}  # type: ignore[union-attr]
+        assert recorded_calls(client)[0]["kwargs"] == {}
 
     async def test_overridden_hook_is_sent_per_request(self) -> None:
         class _NoVerify(_ProbeClient):
@@ -83,10 +83,10 @@ class TestSslHook:
         client = _NoVerify(
             auth=ApiKeyAuth(api_key="k"),
             base_url="https://192.168.1.1/",
-            session=FakeSession(FakeResponse(200, json.dumps({"ok": True}))),
+            session=fake_session(FakeResponse(200, json.dumps({"ok": True}))),
         )
         await client._request("GET", "devices")
-        assert client._session.calls[0]["kwargs"] == {"ssl": False}  # type: ignore[union-attr]
+        assert recorded_calls(client)[0]["kwargs"] == {"ssl": False}
 
 
 class TestRedaction:

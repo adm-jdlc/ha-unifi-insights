@@ -7,14 +7,14 @@ import json
 
 from custom_components.unifi_insights.api.access import UniFiAccessClient
 from custom_components.unifi_insights.probe import ProbeStatus, async_probe_access
-from tests.test_api_access_client import FakeResponse, FakeSession
+from tests.test_api_access_client import FakeResponse, fake_session
 
 
 def _client(*responses: FakeResponse) -> UniFiAccessClient:
     return UniFiAccessClient(
         token="token-value",  # noqa: S106 - fixture token, not a credential
         host="192.168.1.1",
-        session=FakeSession(*responses),
+        session=fake_session(*responses),
     )
 
 

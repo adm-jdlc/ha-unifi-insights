@@ -674,6 +674,7 @@ async def test_slow_body_is_cut_off_with_request_timeout(
         caplog.at_level(logging.WARNING),
     ):
         response = await handler(hass, WEBHOOK_ID, request)
+    assert response is not None
     assert response.status == HTTPStatus.REQUEST_TIMEOUT
     assert "(timeout)" in caplog.text
 

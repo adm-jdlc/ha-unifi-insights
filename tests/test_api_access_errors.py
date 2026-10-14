@@ -19,7 +19,7 @@ from custom_components.unifi_insights.api.exceptions import (
     UniFiResponseError,
 )
 from custom_components.unifi_insights.probe import ProbeStatus, async_probe_access
-from tests.test_api_access_client import FakeResponse, FakeSession
+from tests.test_api_access_client import FakeResponse, fake_session
 
 _USER_ID = "17d2f099-99df-429b-becb-1399a6937e5a"
 _SERVER_TEXT = "server-side detail that must not reach an exception"
@@ -29,7 +29,7 @@ def _client(*responses: FakeResponse) -> UniFiAccessClient:
     return UniFiAccessClient(
         token="token-value",  # noqa: S106 - fixture token, not a credential
         host="192.168.1.1",
-        session=FakeSession(*responses),
+        session=fake_session(*responses),
     )
 
 

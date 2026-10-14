@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 from homeassistant.const import CONF_API_KEY
@@ -19,6 +19,22 @@ from custom_components.unifi_insights.coordinators.access import (
     async_dispatch_access_result,
 )
 from tests.test_access_coordinator import DEVICES, DOORS, ENTRY_DATA, _client, _ready
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from homeassistant.helpers.entity import Entity
+    from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+
+def _collector(added: list[Any]) -> AddEntitiesCallback:
+    """Return a platform add callback that appends entities to ``added``."""
+
+    def _add(new_entities: Iterable[Entity], update_before_add: object = None) -> None:
+        """Accept HA's optional update flag while only collecting entities."""
+        added.extend(new_entities)
+
+    return _add
 
 
 def _entry(hass: Any, data: dict[str, Any] | None = None) -> MockConfigEntry:
@@ -45,11 +61,7 @@ async def _wired(hass: Any, *, devices: list[Any] | None = None) -> tuple[Any, .
     )
     entry.runtime_data.access_coordinator = coordinator
     added: list[Any] = []
-
-    def _add(entities: list[Any]) -> None:
-        added.extend(entities)
-
-    event_platform.async_setup_access_events(hass, entry, _add)
+    event_platform.async_setup_access_events(hass, entry, _collector(added))
     return entry, coordinator, added
 
 
@@ -93,7 +105,7 @@ async def test_setup_is_a_no_op_without_namespace(hass: Any) -> None:
     )
     added: list[Any] = []
 
-    event_platform.async_setup_access_events(hass, entry, added.extend)
+    event_platform.async_setup_access_events(hass, entry, _collector(added))
     async_dispatcher_send(
         hass, access_doorbell_signal(entry.entry_id), {"device_id": "reader"}
     )

@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from custom_components.unifi_insights.api.access import UniFiAccessClient
+from custom_components.unifi_insights.api.access import GateCommand, UniFiAccessClient
 from custom_components.unifi_insights.api.access.models import (
     AccessDevice,
     AccessDoor,
@@ -19,7 +19,7 @@ from custom_components.unifi_insights.api.exceptions import (
     UniFiResponseError,
     UniFiValidationError,
 )
-from tests.test_api_access_client import FakeResponse, FakeSession
+from tests.test_api_access_client import FakeResponse, fake_session, recorded_calls
 
 _DOOR_ID = "0ed545f8-2fcd-4839-9021-b39e707f6aa9"
 _USER_ID = "17d2f099-99df-429b-becb-1399a6937e5a"
@@ -37,7 +37,7 @@ def _client(*responses: FakeResponse) -> UniFiAccessClient:
     return UniFiAccessClient(
         token="token-value",  # noqa: S106 - fixture token, not a credential
         host="192.168.1.1",
-        session=FakeSession(*responses),
+        session=fake_session(*responses),
     )
 
 
@@ -51,9 +51,7 @@ def _ok(data: Any = None) -> FakeResponse:
 
 
 def _calls(client: UniFiAccessClient) -> list[dict[str, Any]]:
-    session = client._session
-    assert isinstance(session, FakeSession)
-    return session.calls
+    return recorded_calls(client)
 
 
 class TestDoors:
@@ -109,7 +107,7 @@ class TestDoors:
         assert call["json"] is None
 
     @pytest.mark.parametrize("command", ["open", "close", "stop"])
-    async def test_gate_command_is_query_parameter(self, command: str) -> None:
+    async def test_gate_command_is_query_parameter(self, command: GateCommand) -> None:
         client = _client(_ok())
         await client.doors.unlock(_DOOR_ID, control_cmd=command)
         call = _calls(client)[0]
@@ -118,8 +116,10 @@ class TestDoors:
 
     async def test_unknown_gate_command_is_refused(self) -> None:
         client = _client()
+        # Dynamic payload: exercises the runtime gate check, not the type hint.
+        invalid_kwargs: dict[str, Any] = {"control_cmd": "lock_now"}
         with pytest.raises(UniFiValidationError):
-            await client.doors.unlock(_DOOR_ID, control_cmd="lock_now")
+            await client.doors.unlock(_DOOR_ID, **invalid_kwargs)
         assert _calls(client) == []
 
     async def test_unlock_refuses_error_envelope_on_http_200(self) -> None:

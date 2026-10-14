@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from homeassistant.components.cover import CoverDeviceClass, CoverEntityFeature
@@ -427,8 +427,8 @@ async def test_emergency_switch_turn_on_and_off_route_through_coordinator(
 
     coordinator.async_set_emergency_mode.assert_has_awaits(
         [
-            (("lockdown",), {"enabled": True}),
-            (("lockdown",), {"enabled": False}),
+            call("lockdown", enabled=True),
+            call("lockdown", enabled=False),
         ]
     )
 
@@ -491,6 +491,7 @@ async def test_lock_entity_device_name_comes_from_the_door(hass: Any) -> None:
     await _setup_access(hass, coordinator, entry)
     lock = lock_platform.UnifiAccessDoorLock(coordinator, "door-plain")
 
+    assert lock.device_info is not None
     assert lock.device_info["name"] == "Lobby door"
 
 

@@ -304,6 +304,7 @@ async def test_connect_keeps_verification_when_client_has_no_override() -> None:
 
     await AccessNotificationSocket(client)._connect()
 
+    assert ws_connect.await_args is not None
     assert ws_connect.await_args.kwargs["ssl"] is True
 
 

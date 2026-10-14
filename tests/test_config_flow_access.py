@@ -40,6 +40,7 @@ from custom_components.unifi_insights.const import (
 )
 
 if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigFlowResult
     from homeassistant.core import HomeAssistant
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
@@ -149,7 +150,7 @@ def _set_access_result(access_client_cls: MagicMock, get_all: AsyncMock) -> None
     access_client_cls.return_value = _access_cm(get_all)
 
 
-async def _start_local_flow(hass: HomeAssistant) -> dict[str, Any]:
+async def _start_local_flow(hass: HomeAssistant) -> ConfigFlowResult:
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -197,7 +198,7 @@ def _existing_entry(
 
 async def _reconfigure(
     hass: HomeAssistant, entry: MockConfigEntry, user_input: dict[str, Any]
-) -> dict[str, Any]:
+) -> ConfigFlowResult:
     entry.add_to_hass(hass)
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
@@ -704,6 +705,7 @@ class TestOptionsAccessWebhook:
         entry.add_to_hass(hass)
         result = await hass.config_entries.options.async_init(entry.entry_id)
         assert result["type"] == FlowResultType.FORM
+        assert result["data_schema"] is not None
         assert CONF_ACCESS_WEBHOOK in {
             key.schema for key in result["data_schema"].schema
         }
@@ -718,6 +720,7 @@ class TestOptionsAccessWebhook:
         entry.add_to_hass(hass)
         result = await hass.config_entries.options.async_init(entry.entry_id)
         assert result["type"] == FlowResultType.FORM
+        assert result["data_schema"] is not None
         assert CONF_ACCESS_WEBHOOK not in {
             key.schema for key in result["data_schema"].schema
         }
