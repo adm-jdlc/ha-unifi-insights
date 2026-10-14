@@ -749,7 +749,14 @@ async def _async_setup_access(
     *,
     verify_ssl: bool,
 ) -> tuple[UniFiAccessClient | None, UnifiInsightsAccessCoordinator | None]:
-    """Set up optional Access without changing the existing application gate."""
+    """
+    Set up optional Access without changing the existing application gate.
+
+    A transient outage keeps the coordinator. Its poll listeners discover door
+    entities on a later good poll, so no reload is needed. Rejected credentials
+    and unsupported or unexpected probe answers close the client. A 401 during
+    the first refresh also closes it.
+    """
     client: UniFiAccessClient | None = None
     try:
         client = UniFiAccessClient(
@@ -760,7 +767,11 @@ async def _async_setup_access(
             session=session,
         )
         result = await async_probe_access(client)
-        if result.status not in (ProbeStatus.AVAILABLE, ProbeStatus.EMPTY):
+        if result.status not in (
+            ProbeStatus.AVAILABLE,
+            ProbeStatus.EMPTY,
+            ProbeStatus.UNREACHABLE,
+        ):
             _LOGGER.warning(
                 "UniFi Access is unavailable (%s); other applications remain active",
                 result.status,
@@ -768,14 +779,29 @@ async def _async_setup_access(
             await _async_close_access(client)
             return None, None
         coordinator = UnifiInsightsAccessCoordinator(hass, entry, client)
-        await coordinator.async_config_entry_first_refresh()
+        # Not async_config_entry_first_refresh: that raises on failure and would
+        # discard the coordinator. The failed snapshot stays empty and unavailable.
+        await coordinator.async_refresh()
         if coordinator.auth_failed:
             await _async_close_access(client)
             return None, None
+        if not coordinator.last_update_success and coordinator.namespace is None:
+            # Entities need a namespace-backed listener to poll and recover.
+            _LOGGER.warning(
+                "UniFi Access is unavailable and has no console identity; "
+                "other applications remain active"
+            )
+            await _async_close_access(client)
+            return None, None
+        if not coordinator.last_update_success:
+            _LOGGER.warning(
+                "UniFi Access is unreachable at startup; its door entities appear "
+                "when the console responds"
+            )
         # Cleanup also runs if platform forwarding subsequently fails.
         entry.async_on_unload(lambda: _async_close_access(client))
         entry.async_on_unload(coordinator.async_stop_websocket)
-    except (UniFiError, ConfigEntryNotReady) as err:
+    except UniFiError as err:
         _LOGGER.warning(
             "UniFi Access setup failed (%s); other applications remain active",
             type(err).__name__,

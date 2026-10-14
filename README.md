@@ -499,8 +499,9 @@ Gate close and stop controls are exposed only for recognized UA Hub Gate devices
 If your token lacks permission for a feature, that feature becomes unavailable.
 Door and gate controls also require device-read permission.
 An expired Access token affects Access entities; replace it through reconfiguration.
-If Access is unavailable during startup, reload the entry after connectivity is
-restored to enable its entities.
+If Access is temporarily unreachable during startup, polling continues and its
+entities are discovered automatically when connectivity returns. Network and
+Protect remain available during the outage.
 
 ### Access entities and actions
 
@@ -547,9 +548,19 @@ Reloading the entry preserves its remote webhook registration. Disabling the
 option or removing the entry deletes that registration when Access is reachable.
 If the option is disabled while Access is offline, the receiver is retired and
 the endpoint metadata is kept so a later entry reload can retry deletion.
-If Access is offline when removing the entry, clearing its token or changing its
-host/port, delete the remaining endpoint in Access. The old receiver is retired;
-the integration does not retain obsolete credentials to retry that cleanup.
+Changing the host or port while keeping Access configured first deletes the old
+webhook endpoint. If deletion fails, reconfiguration stops and retains the old
+receiver and connection settings so you can retry after restoring connectivity.
+Check the old token's permissions if the console rejects deletion. If cleanup is
+no longer possible, clear the Access token first, remove the remaining endpoint
+in Access, then reconfigure the host or port.
+If Access is offline when removing the entry or clearing its token, delete the
+remaining endpoint in Access. The old receiver is retired; the integration does
+not retain obsolete credentials to retry that cleanup.
+Webhook registration runs during entry setup. If initial registration fails,
+reload the entry after addressing the connection, URL or permission problem.
+Access-result deliveries are ignored until a successful poll discovers their
+door, including deliveries received during a startup outage.
 If Access accepts a webhook registration but returns an unusable response,
 remove the orphaned endpoint in Access before retrying setup.
 Tokens, PINs, signing secrets and credential values are excluded from diagnostics

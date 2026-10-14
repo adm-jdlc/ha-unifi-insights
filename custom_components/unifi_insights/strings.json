@@ -130,6 +130,7 @@
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
       "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]",
       "account_mismatch": "The API key provided does not match the original account. Please use the same API key or remove and re-add the integration.",
+      "cannot_connect": "Could not remove the UniFi Access webhook from the current console, so the new host or port was not saved. Check the current console's connection and token permissions, then try again. If cleanup is no longer possible, clear the UniFi Access token first and remove the remaining webhook in Access.",
       "carrier_org_mismatch": "The provided ISP API key belongs to a different organisation than the configured entry."
     }
   },

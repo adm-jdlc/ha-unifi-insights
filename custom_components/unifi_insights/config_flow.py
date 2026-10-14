@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from homeassistant.config_entries import (
     ConfigEntry,
@@ -1029,17 +1029,18 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _async_reconfigure_access(
         self, entry: ConfigEntry, user_input: dict[str, Any]
-    ) -> tuple[dict[str, str], dict[str, Any], bool]:
+    ) -> tuple[dict[str, str], dict[str, Any], Literal["clear", "move"] | None]:
         """
         Validate and plan the Access fields for a local reconfigure.
 
-        Returns the form errors, the Access fields to store, and whether the
-        old Access webhook must be removed from its console before the save.
-        Rotating the token on the same host and port keeps the stored webhook
-        identifiers and secret. Moving to another host or port, or clearing the
-        token, makes the stored registration belong to a server the entry no
-        longer uses, so it is removed and its state dropped. A moved entry
-        validates the stored token against the new server first.
+        Returns the form errors, the Access fields to store, and the remote
+        Access webhook cleanup the save needs, if any. Rotating the token on the
+        same host and port keeps the stored webhook identifiers and secret.
+        Moving to another host or port makes the stored registration belong to a
+        server the entry no longer uses, so it is removed before the save and the
+        save is refused if that removal cannot be confirmed. Clearing the token
+        removes it on a best-effort basis. A moved entry validates the stored
+        token against the new server first.
         """
         stored_token = entry.data.get(CONF_ACCESS_TOKEN)
         has_webhook = any(key in entry.data for key in _ACCESS_WEBHOOK_STATE_KEYS)
@@ -1056,30 +1057,30 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
         if clear:
             # Clearing without a stored token keeps the existing behaviour: no
             # remote call, and nothing to drop.
-            return {}, {}, bool(stored_token and has_webhook)
+            return {}, {}, "clear" if stored_token and has_webhook else None
 
         token = typed_token
         if token is None and stored_token and moved:
             token = stored_token
         if token is None:
-            return {}, stored_fields, False
+            return {}, stored_fields, None
 
         access_error = await self._async_validate_access(
             host=new_host, token=token, port=new_port, verify_ssl=verify_ssl
         )
         if access_error:
-            return {CONF_ACCESS_TOKEN: access_error}, {}, False
+            return {CONF_ACCESS_TOKEN: access_error}, {}, None
 
         access_fields: dict[str, Any] = {
             CONF_ACCESS_TOKEN: token,
             CONF_ACCESS_PORT: new_port,
         }
         if stored_token and has_webhook and moved:
-            return {}, access_fields, True
+            return {}, access_fields, "move"
         for key in _ACCESS_WEBHOOK_STATE_KEYS:
             if key in entry.data:
                 access_fields[key] = entry.data[key]
-        return {}, access_fields, False
+        return {}, access_fields, None
 
     async def _async_reconfigure_local(
         self,
@@ -1088,7 +1089,7 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
         console_info: dict[str, str],
         *,
         access_data: dict[str, Any],
-        cleanup: bool,
+        cleanup: Literal["clear", "move"] | None,
     ) -> ConfigFlowResult:
         """Save a validated local reconfigure, with its Access fields and cleanup."""
         current_id = entry.data.get(CONF_CONSOLE_ID) or entry.unique_id
@@ -1134,11 +1135,18 @@ class UnifiInsightsConfigFlow(ConfigFlow, domain=DOMAIN):
         if cleanup:
             # Remote cleanup runs after the new connection validated and
             # immediately before the save, so a rejected reconfigure keeps the
-            # working registration.
+            # working registration. A move saves only once the old console has
+            # confirmed the endpoint is gone; a cleared token is retired best
+            # effort, so it stays removable while the old console is offline.
             # Local import: access_webhook depends on this module's package init.
             from .access_webhook import async_remove_access_webhook  # noqa: PLC0415
 
-            await async_remove_access_webhook(self.hass, entry)
+            keep_receiver = cleanup == "move"
+            removed = await async_remove_access_webhook(
+                self.hass, entry, keep_receiver_on_failure=keep_receiver
+            )
+            if keep_receiver and not removed:
+                return self.async_abort(reason="cannot_connect")
         new_data.update(access_data)
         return self._async_update_site_entry_and_abort(
             entry,

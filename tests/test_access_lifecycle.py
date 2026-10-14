@@ -3,14 +3,17 @@
 
 import asyncio
 import logging
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components import webhook
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.unifi_insights import (
     _async_setup_access,
@@ -22,6 +25,7 @@ from custom_components.unifi_insights.api import (
     UniFiAuthenticationError,
     UniFiConnectionError,
     UniFiNotFoundError,
+    UniFiResponseError,
     UniFiValidationError,
 )
 from custom_components.unifi_insights.api.access.models import AccessWebhookEndpoint
@@ -31,8 +35,8 @@ from custom_components.unifi_insights.const import (
     CONF_ACCESS_WEBHOOK_ID,
     CONF_CONSOLE_ID,
     DOMAIN,
+    SCAN_INTERVAL_ACCESS,
 )
-from custom_components.unifi_insights.probe import ProbeResult, ProbeStatus
 from tests.test_access_coordinator import DEVICES, DOORS, NAMESPACE, _client
 
 
@@ -41,11 +45,11 @@ from tests.test_access_coordinator import DEVICES, DOORS, NAMESPACE, _client
     [
         UniFiAuthenticationError("Rejected", status_code=401),
         UniFiAuthenticationError("Denied", status_code=403),
-        UniFiConnectionError("Unavailable"),
         UniFiNotFoundError("Absent", status_code=404),
+        UniFiValidationError("Unexpected answer"),
     ],
 )
-async def test_access_probe_failure_preserves_existing_applications(
+async def test_access_permanent_probe_failure_preserves_existing_applications(
     *,
     hass,
     mock_config_entry,
@@ -55,7 +59,7 @@ async def test_access_probe_failure_preserves_existing_applications(
     enable_custom_integrations,
     error,
 ):
-    """A rejected or unreachable Access application never starts entry reauth."""
+    """A rejected, unsupported or unknown Access application stays closed."""
     client = MagicMock()
     client.doors.get_all = AsyncMock(side_effect=error)
     client.close = AsyncMock()
@@ -96,44 +100,271 @@ async def test_access_is_not_created_without_a_token(
     assert mock_config_entry.runtime_data.access_client is None
 
 
-@pytest.mark.parametrize("auth_failed", [False, True])
-async def test_access_first_refresh_failure_closes_client(
-    hass, mock_config_entry, auth_failed
+def _add_access_entry(hass, entry, *, console_id: bool = True) -> None:
+    """Give the entry an Access token, and a console namespace unless told not to."""
+    entry.add_to_hass(hass)
+    data = {**entry.data, CONF_ACCESS_TOKEN: "test-access-token"}
+    if console_id:
+        data[CONF_CONSOLE_ID] = NAMESPACE
+    hass.config_entries.async_update_entry(entry, data=data)
+
+
+async def _setup_access_directly(hass, entry, client):
+    """Run the Access setup step with a client double and no platform forwarding."""
+    with patch(
+        "custom_components.unifi_insights.UniFiAccessClient", return_value=client
+    ):
+        return await _async_setup_access(
+            hass, entry, async_get_clientsession(hass), verify_ssl=False
+        )
+
+
+@pytest.mark.parametrize(
+    "doors_side_effect",
+    [
+        # The probe itself is unreachable.
+        UniFiConnectionError("Unavailable"),
+        UniFiResponseError("Busy", status_code=503),
+        # The probe answers, then the first refresh loses the console.
+        [DOORS, UniFiConnectionError("Unavailable")],
+    ],
+    ids=["probe-unreachable", "probe-server-error", "first-fetch-unreachable"],
+)
+async def test_transient_access_outage_keeps_coordinator_for_recovery(
+    hass, mock_config_entry, doors_side_effect
 ):
-    """A failed first refresh releases resources and remains isolated."""
-    mock_config_entry.add_to_hass(hass)
-    hass.config_entries.async_update_entry(
-        mock_config_entry,
-        data={**mock_config_entry.data, CONF_ACCESS_TOKEN: "test-access-token"},
+    """An outage at startup keeps the failed coordinator and its client open."""
+    _add_access_entry(hass, mock_config_entry)
+    client = _client(doors=DOORS, devices=DEVICES)
+    client.doors.get_all.side_effect = doors_side_effect
+
+    client_out, coordinator = await _setup_access_directly(
+        hass, mock_config_entry, client
     )
-    client = MagicMock()
-    client.close = AsyncMock()
-    coordinator = MagicMock()
-    coordinator.auth_failed = auth_failed
-    coordinator.async_config_entry_first_refresh = AsyncMock(
-        side_effect=None if auth_failed else ConfigEntryNotReady
+
+    assert client_out is client
+    assert coordinator is not None
+    assert not coordinator.last_update_success
+    assert coordinator.data == {"doors": {}, "devices": {}, "emergency": None}
+    client.close.assert_not_awaited()
+
+
+async def test_access_outage_without_console_namespace_closes_client(
+    hass, mock_config_entry
+):
+    """Without a namespace no listener can poll, so an outage closes Access."""
+    _add_access_entry(hass, mock_config_entry, console_id=False)
+    client = _client(doors=DOORS, devices=DEVICES)
+    client.doors.get_all.side_effect = UniFiConnectionError("Unavailable")
+
+    assert await _setup_access_directly(hass, mock_config_entry, client) == (
+        None,
+        None,
     )
+    client.close.assert_awaited_once()
+
+
+async def test_access_token_rejected_after_probe_closes_client(hass, mock_config_entry):
+    """A token rejected by the first read is permanent, so Access is closed."""
+    _add_access_entry(hass, mock_config_entry)
+    client = _client(doors=DOORS, devices=DEVICES)
+    client.doors.get_all.side_effect = [
+        DOORS,
+        UniFiAuthenticationError("Rejected", status_code=401),
+    ]
+
+    assert await _setup_access_directly(hass, mock_config_entry, client) == (
+        None,
+        None,
+    )
+    client.close.assert_awaited_once()
+
+
+async def test_empty_access_console_is_retained_without_entities(
+    hass, mock_config_entry
+):
+    """An empty console is a healthy answer: the coordinator is kept, nothing errors."""
+    _add_access_entry(hass, mock_config_entry)
+    client = _client(doors=[], devices=[])
+
+    client_out, coordinator = await _setup_access_directly(
+        hass, mock_config_entry, client
+    )
+
+    assert client_out is client
+    assert coordinator is not None
+    assert coordinator.last_update_success
+    assert coordinator.data["doors"] == {}
+    client.close.assert_not_awaited()
+
+
+async def test_unreachable_access_recovers_without_reload(
+    *,
+    hass,
+    mock_config_entry,
+    mock_network_client,
+    mock_protect_client,
+    mock_local_auth,
+    enable_custom_integrations,
+):
+    """Real HA: an outage at startup, then a good poll, adds entities without reload."""
+    _add_access_entry(hass, mock_config_entry)
+    client = _client(doors=DOORS, devices=DEVICES)
+    client.doors.get_all.side_effect = UniFiConnectionError("Unavailable")
+    unique_id = access_unique_id(NAMESPACE, "door-plain", "lock")
+
+    async def _run_socket(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
     with (
         patch(
             "custom_components.unifi_insights.UniFiAccessClient", return_value=client
         ),
         patch(
-            "custom_components.unifi_insights.async_probe_access",
-            return_value=ProbeResult(ProbeStatus.EMPTY),
-        ),
-        patch(
-            "custom_components.unifi_insights.UnifiInsightsAccessCoordinator",
-            return_value=coordinator,
+            "custom_components.unifi_insights.coordinators.access."
+            "AccessNotificationSocket.run",
+            side_effect=_run_socket,
         ),
     ):
-        assert await _async_setup_access(
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        data = mock_config_entry.runtime_data
+        coordinator = data.access_coordinator
+        assert mock_config_entry.state is ConfigEntryState.LOADED
+        assert coordinator is not None
+        assert not coordinator.last_update_success
+        assert (
+            async_get_entity_registry(hass).async_get_entity_id(
+                "lock", DOMAIN, unique_id
+            )
+            is None
+        )
+        task = coordinator._ws_task
+        assert task is not None
+        client.close.assert_not_awaited()
+
+        client.doors.get_all.side_effect = None
+        async_fire_time_changed(
+            hass, dt_util.utcnow() + SCAN_INTERVAL_ACCESS + timedelta(seconds=1)
+        )
+        await hass.async_block_till_done()
+
+        assert coordinator.last_update_success
+        assert mock_config_entry.runtime_data.access_coordinator is coordinator
+        assert mock_config_entry.state is ConfigEntryState.LOADED
+        assert mock_config_entry.runtime_data.network_client is mock_network_client
+        assert hass.config_entries.flow.async_progress() == []
+        entity_id = async_get_entity_registry(hass).async_get_entity_id(
+            "lock", DOMAIN, unique_id
+        )
+        assert entity_id is not None
+        assert hass.states.get(entity_id).state == "unlocked"
+
+        client.doors.get_all.side_effect = UniFiConnectionError("Unavailable")
+        async_fire_time_changed(
             hass,
-            mock_config_entry,
-            async_get_clientsession(hass),
-            verify_ssl=False,
-        ) == (None, None)
-    client.close.assert_awaited_once()
-    coordinator.async_start_websocket.assert_not_called()
+            dt_util.utcnow() + SCAN_INTERVAL_ACCESS * 2 + timedelta(seconds=2),
+        )
+        await hass.async_block_till_done()
+
+        assert not coordinator.last_update_success
+        assert hass.states.get(entity_id).state == "unavailable"
+
+        assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert task.cancelled()
+    client.close.assert_awaited()
+
+
+async def test_unload_during_access_outage_releases_socket_and_client(
+    *,
+    hass,
+    mock_config_entry,
+    mock_network_client,
+    mock_protect_client,
+    mock_local_auth,
+    enable_custom_integrations,
+):
+    """Unloading during an outage cancels the socket and closes the client."""
+    _add_access_entry(hass, mock_config_entry)
+    client = _client(doors=DOORS, devices=DEVICES)
+    client.doors.get_all.side_effect = UniFiConnectionError("Unavailable")
+
+    async def _run_socket(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    with (
+        patch(
+            "custom_components.unifi_insights.UniFiAccessClient", return_value=client
+        ),
+        patch(
+            "custom_components.unifi_insights.coordinators.access."
+            "AccessNotificationSocket.run",
+            side_effect=_run_socket,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        task = mock_config_entry.runtime_data.access_coordinator._ws_task
+        assert task is not None
+        assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert task.cancelled()
+    client.close.assert_awaited()
+
+
+async def test_unreachable_access_with_webhook_requested_stays_inactive(
+    *,
+    hass,
+    mock_config_entry,
+    mock_network_client,
+    mock_protect_client,
+    mock_local_auth,
+    enable_custom_integrations,
+):
+    """The one-shot webhook setup fails cleanly in an outage, with no receiver."""
+    _add_access_entry(hass, mock_config_entry)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={**mock_config_entry.options, CONF_ACCESS_WEBHOOK: True},
+    )
+    client = _client(doors=DOORS, devices=DEVICES)
+    client.doors.get_all.side_effect = UniFiConnectionError("Unavailable")
+    client.webhooks.get_all = AsyncMock(side_effect=UniFiConnectionError("Unavailable"))
+    client.webhooks.create = AsyncMock(side_effect=UniFiConnectionError("Unavailable"))
+    client.webhooks.delete = AsyncMock()
+
+    async def _run_socket(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    with (
+        patch(
+            "custom_components.unifi_insights.UniFiAccessClient", return_value=client
+        ),
+        patch(
+            "custom_components.unifi_insights.access_webhook.webhook.async_generate_url",
+            return_value="http://ha.test.local:8123/api/webhook/test-outage",
+        ),
+        patch(
+            "custom_components.unifi_insights.coordinators.access."
+            "AccessNotificationSocket.run",
+            side_effect=_run_socket,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        coordinator = mock_config_entry.runtime_data.access_coordinator
+        assert mock_config_entry.state is ConfigEntryState.LOADED
+        assert coordinator is not None
+        assert not coordinator.webhook_active
+        assert mock_config_entry.data[CONF_ACCESS_WEBHOOK_ID] not in hass.data.get(
+            webhook.DOMAIN, {}
+        )
+        assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
 
 
 async def test_access_close_failure_does_not_block_other_applications(

@@ -601,31 +601,57 @@ async def async_unload_access_webhook(hass: HomeAssistant, entry: ConfigEntry) -
         coordinator.async_set_webhook_active(active=False)
 
 
-async def async_remove_access_webhook(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """
-    Unregister the receiver and delete the remote endpoint, best effort.
-
-    Works without a loaded coordinator, so it runs for disabled, failed and
-    removed entries. A temporary client is built from the stored token, host,
-    port and TLS setting, and closed afterwards. The delete is bounded by
-    ``REMOVE_DELETE_TIMEOUT_SECONDS`` so an offline console cannot block removal.
-    """
-    _async_unregister(hass, entry)
+async def _async_delete_stored_endpoint(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> bool:
+    """Delete the stored endpoint within a bound. True when none is left remotely."""
     endpoint_id = entry.data.get(CONF_ACCESS_WEBHOOK_ENDPOINT_ID)
     if not isinstance(endpoint_id, str) or not endpoint_id:
-        return
+        return True
     client = _temporary_client(hass, entry)
     if client is None:
         _LOGGER.warning(
             "Could not delete UniFi Access webhook endpoint: no usable stored settings"
         )
-        return
+        return False
     try:
         async with asyncio.timeout(REMOVE_DELETE_TIMEOUT_SECONDS):
-            await _async_delete_endpoint(client, endpoint_id)
+            return await _async_delete_endpoint(client, endpoint_id)
     except TimeoutError:
         _LOGGER.warning(
             "Timed out deleting UniFi Access webhook endpoint; console may be offline"
         )
+        return False
     finally:
         await client.close()
+
+
+async def async_remove_access_webhook(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    keep_receiver_on_failure: bool = False,
+) -> bool:
+    """
+    Delete the remote endpoint and unregister the receiver, best effort.
+
+    Works without a loaded coordinator, so it runs for disabled, failed and
+    removed entries. A temporary client is built from the stored token, host,
+    port and TLS setting, and closed afterwards. The delete is bounded by
+    ``REMOVE_DELETE_TIMEOUT_SECONDS`` so an offline console cannot block removal.
+
+    Returns True when the remote endpoint is confirmed gone: it was deleted, the
+    console reported it missing, or none was stored. Returns False when it may
+    still exist.
+
+    By default the receiver is unregistered whatever the outcome. With
+    ``keep_receiver_on_failure`` the delete runs first and the receiver is
+    unregistered only after a confirmed delete, so a failed host or port move
+    keeps the working registration for the old console.
+    """
+    if not keep_receiver_on_failure:
+        _async_unregister(hass, entry)
+    deleted = await _async_delete_stored_endpoint(hass, entry)
+    if keep_receiver_on_failure and deleted:
+        _async_unregister(hass, entry)
+    return deleted

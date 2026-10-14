@@ -3,19 +3,23 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant import config_entries
+from homeassistant.components import webhook
 from homeassistant.const import CONF_API_KEY, CONF_HOST, CONF_VERIFY_SSL
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.unifi_insights.api import (
     UniFiAuthenticationError,
     UniFiConnectionError,
     UniFiNotFoundError,
+    UniFiResponseError,
     UniFiValidationError,
 )
 from custom_components.unifi_insights.config_flow import (
@@ -135,8 +139,14 @@ def remove_webhook():
     """Patch the remote webhook cleanup and record the entry data it saw."""
     seen: list[dict[str, Any]] = []
 
-    async def _record(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    async def _record(
+        hass: HomeAssistant,
+        entry: MockConfigEntry,
+        *,
+        keep_receiver_on_failure: bool = False,
+    ) -> bool:
         seen.append(dict(entry.data))
+        return True
 
     with patch(
         "custom_components.unifi_insights.access_webhook.async_remove_access_webhook",
@@ -144,6 +154,42 @@ def remove_webhook():
     ) as mock:
         mock.seen = seen
         yield mock
+
+
+@pytest.fixture
+def remote_console():
+    """Patch the temporary Access client used by the real webhook cleanup."""
+    client = MagicMock()
+    client.webhooks.delete = AsyncMock(return_value=None)
+    client.close = AsyncMock(return_value=None)
+    with patch(
+        "custom_components.unifi_insights.access_webhook.UniFiAccessClient",
+        return_value=client,
+    ):
+        yield client
+
+
+async def _register_receiver(hass: HomeAssistant) -> list[str]:
+    """Register the stored receiver id; the returned list records each delivery."""
+    calls: list[str] = []
+
+    async def _handler(_hass: HomeAssistant, webhook_id: str, _request: Any) -> None:
+        calls.append(webhook_id)
+
+    await async_setup_component(hass, "webhook", {})
+    webhook.async_register(hass, DOMAIN, "Access", "receiver-id", _handler)
+    return calls
+
+
+async def _receiver_answers(
+    hass: HomeAssistant, hass_client: Any, calls: list[str]
+) -> bool:
+    """Post to the receiver path and report whether its handler ran."""
+    before = len(calls)
+    http = await hass_client()
+    await http.post(webhook.async_generate_path("receiver-id"))
+    await hass.async_block_till_done()
+    return len(calls) > before
 
 
 def _set_access_result(access_client_cls: MagicMock, get_all: AsyncMock) -> None:
@@ -172,6 +218,7 @@ def _existing_entry(
     *,
     token: str | None = _OLD_TOKEN,
     webhook: bool = True,
+    endpoint: bool = True,
     host: str = _HOST,
     port: int | None = None,
 ) -> MockConfigEntry:
@@ -188,6 +235,9 @@ def _existing_entry(
         data[CONF_ACCESS_PORT] = port
     if webhook and token is not None:
         data.update(_WEBHOOK_STATE)
+        if not endpoint:
+            del data[CONF_ACCESS_WEBHOOK_ENDPOINT_ID]
+            del data[CONF_ACCESS_WEBHOOK_SECRET]
     return MockConfigEntry(
         domain=DOMAIN,
         unique_id=_CONSOLE_MAC,
@@ -508,6 +558,7 @@ class TestReconfigureAccess:
         )
         assert result["type"] == FlowResultType.ABORT
         remove_webhook.assert_awaited_once()
+        assert remove_webhook.call_args.kwargs == {"keep_receiver_on_failure": False}
         # The cleanup saw the original entry, so it could reach the old server.
         assert remove_webhook.seen[0][CONF_ACCESS_TOKEN] == _OLD_TOKEN
         assert remove_webhook.seen[0][CONF_ACCESS_WEBHOOK_ENDPOINT_ID] == "endpoint-id"
@@ -559,6 +610,7 @@ class TestReconfigureAccess:
         assert access_client_cls.call_args.kwargs["host"] == _NEW_HOST
         assert access_client_cls.call_args.kwargs["token"] == _OLD_TOKEN
         remove_webhook.assert_awaited_once()
+        assert remove_webhook.call_args.kwargs == {"keep_receiver_on_failure": True}
         assert remove_webhook.seen[0][CONF_HOST] == _HOST
         assert entry.data[CONF_HOST] == _NEW_HOST
         assert entry.data[CONF_ACCESS_TOKEN] == _OLD_TOKEN
@@ -664,6 +716,134 @@ class TestReconfigureAccess:
         access_client_cls.assert_not_called()
         remove_webhook.assert_not_called()
         assert CONF_ACCESS_TOKEN not in entry.data
+
+
+@pytest.mark.usefixtures("network_cm", "access_client_cls")
+class TestReconfigureReceiverCleanup:
+    """Host/port moves and clears drive the real remote cleanup and receiver."""
+
+    async def test_move_refused_cleanup_aborts_and_keeps_everything(
+        self,
+        hass: HomeAssistant,
+        hass_client: Any,
+        remote_console,
+    ) -> None:
+        entry = _existing_entry()
+        calls = await _register_receiver(hass)
+        before = dict(entry.data)
+        remote_console.webhooks.delete.side_effect = UniFiResponseError(
+            "refused", status_code=500
+        )
+        result = await _reconfigure(hass, entry, _local_input(**{CONF_HOST: _NEW_HOST}))
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "cannot_connect"
+        assert dict(entry.data) == before
+        remote_console.webhooks.delete.assert_awaited_once_with("endpoint-id")
+        remote_console.close.assert_awaited_once()
+        assert await _receiver_answers(hass, hass_client, calls)
+
+    @pytest.mark.parametrize(
+        "failure", ["refused", "rejected", "permission", "timeout"]
+    )
+    async def test_move_failed_or_timed_out_cleanup_keeps_receiver_and_identity(
+        self,
+        hass: HomeAssistant,
+        hass_client: Any,
+        remote_console,
+        failure: str,
+    ) -> None:
+        entry = _existing_entry()
+        calls = await _register_receiver(hass)
+        before = dict(entry.data)
+
+        async def hang(_endpoint_id: str) -> None:
+            await asyncio.sleep(10)
+
+        if failure == "refused":
+            delete_failure = UniFiResponseError("refused", status_code=500)
+        elif failure == "rejected":
+            delete_failure = UniFiAuthenticationError("rejected", status_code=401)
+        elif failure == "permission":
+            delete_failure = UniFiAuthenticationError("denied", status_code=403)
+        else:
+            delete_failure = hang
+        remote_console.webhooks.delete.side_effect = delete_failure
+        with patch(
+            "custom_components.unifi_insights.access_webhook.REMOVE_DELETE_TIMEOUT_SECONDS",
+            0.05,
+        ):
+            result = await _reconfigure(
+                hass, entry, _local_input(**{CONF_HOST: _NEW_HOST})
+            )
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "cannot_connect"
+        assert dict(entry.data) == before
+        assert await _receiver_answers(hass, hass_client, calls)
+
+    @pytest.mark.parametrize(
+        "delete_error",
+        [
+            None,
+            UniFiNotFoundError("gone", status_code=404),
+            UniFiResponseError("gone", status_code=404),
+        ],
+    )
+    async def test_move_confirmed_gone_retires_receiver_then_saves(
+        self,
+        hass: HomeAssistant,
+        hass_client: Any,
+        remote_console,
+        delete_error: Exception | None,
+    ) -> None:
+        entry = _existing_entry()
+        calls = await _register_receiver(hass)
+        remote_console.webhooks.delete.side_effect = delete_error
+        result = await _reconfigure(hass, entry, _local_input(**{CONF_HOST: _NEW_HOST}))
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "reconfigure_successful"
+        remote_console.webhooks.delete.assert_awaited_once_with("endpoint-id")
+        assert entry.data[CONF_HOST] == _NEW_HOST
+        assert entry.data[CONF_ACCESS_TOKEN] == _OLD_TOKEN
+        assert CONF_ACCESS_WEBHOOK_ID not in entry.data
+        assert CONF_ACCESS_WEBHOOK_ENDPOINT_ID not in entry.data
+        assert CONF_ACCESS_WEBHOOK_SECRET not in entry.data
+        assert not await _receiver_answers(hass, hass_client, calls)
+
+    async def test_move_without_stored_endpoint_saves_without_remote_call(
+        self,
+        hass: HomeAssistant,
+        hass_client: Any,
+        remote_console,
+    ) -> None:
+        entry = _existing_entry(endpoint=False)
+        calls = await _register_receiver(hass)
+        result = await _reconfigure(hass, entry, _local_input(**{CONF_HOST: _NEW_HOST}))
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "reconfigure_successful"
+        remote_console.webhooks.delete.assert_not_called()
+        assert entry.data[CONF_HOST] == _NEW_HOST
+        assert CONF_ACCESS_WEBHOOK_ID not in entry.data
+        assert not await _receiver_answers(hass, hass_client, calls)
+
+    async def test_clear_refused_cleanup_still_drops_token(
+        self,
+        hass: HomeAssistant,
+        hass_client: Any,
+        remote_console,
+    ) -> None:
+        entry = _existing_entry(port=8443)
+        calls = await _register_receiver(hass)
+        remote_console.webhooks.delete.side_effect = UniFiResponseError(
+            "refused", status_code=500
+        )
+        result = await _reconfigure(
+            hass, entry, _local_input(**{CONF_CLEAR_ACCESS_TOKEN: True})
+        )
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "reconfigure_successful"
+        assert CONF_ACCESS_TOKEN not in entry.data
+        assert CONF_ACCESS_WEBHOOK_ID not in entry.data
+        assert not await _receiver_answers(hass, hass_client, calls)
 
 
 class TestReauthAccess:

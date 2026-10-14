@@ -1311,6 +1311,229 @@ async def test_remove_survives_delete_failure(
         patch.object(aw, "UniFiAccessClient", return_value=client),
         caplog.at_level(logging.WARNING),
     ):
-        await aw.async_remove_access_webhook(hass, entry)
+        assert await aw.async_remove_access_webhook(hass, entry) is False
     assert "Could not delete" in caplog.text
     client.close.assert_awaited_once()
+
+
+async def _receiver_accepts(hass: Any, hass_client: Any, events: list[Any]) -> bool:
+    """Post a fresh signed grant and report whether the receiver dispatched it."""
+    events.clear()
+    body = _unlock_event()
+    http = await hass_client()
+    await http.post(
+        webhook.async_generate_path(WEBHOOK_ID),
+        data=body,
+        headers={"Signature": _sign(body, timestamp=int(time.time()))},
+    )
+    await hass.async_block_till_done()
+    return bool(events)
+
+
+def _stored_receiver(
+    webhook_setup: tuple[MagicMock, Any, Any],
+) -> tuple[Any, list[Any]]:
+    """Return the entry and events of an enabled receiver with a stored endpoint."""
+    _, entry, events = webhook_setup
+    assert entry.data[CONF_ACCESS_WEBHOOK_ENDPOINT_ID] == ENDPOINT_ID
+    return entry, events
+
+
+@pytest.mark.parametrize(
+    "delete_error",
+    [
+        None,
+        UniFiNotFoundError("gone", status_code=404),
+        UniFiResponseError("gone", status_code=404),
+    ],
+)
+async def test_keep_receiver_retires_receiver_after_confirmed_delete(
+    hass: Any,
+    hass_client: Any,
+    webhook_setup: tuple[MagicMock, Any, Any],
+    delete_error: Exception | None,
+) -> None:
+    """Deleted or already-missing endpoints return True and drop the receiver."""
+    entry, events = _stored_receiver(webhook_setup)
+    assert await _receiver_accepts(hass, hass_client, events) is True
+    client = _client()
+    client.webhooks.delete = AsyncMock(side_effect=delete_error)
+    with patch.object(aw, "UniFiAccessClient", return_value=client):
+        result = await aw.async_remove_access_webhook(
+            hass, entry, keep_receiver_on_failure=True
+        )
+    assert result is True
+    client.webhooks.delete.assert_awaited_once_with(ENDPOINT_ID)
+    client.close.assert_awaited_once()
+    assert await _receiver_accepts(hass, hass_client, events) is False
+
+
+async def test_keep_receiver_keeps_registration_when_delete_is_refused(
+    hass: Any,
+    hass_client: Any,
+    webhook_setup: tuple[MagicMock, Any, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A refused delete keeps the receiver, the entry data and the secret."""
+    entry, events = _stored_receiver(webhook_setup)
+    before = dict(entry.data)
+    client = _client()
+    client.webhooks.delete = AsyncMock(
+        side_effect=UniFiResponseError("refused", status_code=500)
+    )
+    with (
+        patch.object(aw, "UniFiAccessClient", return_value=client),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await aw.async_remove_access_webhook(
+            hass, entry, keep_receiver_on_failure=True
+        )
+    assert result is False
+    assert dict(entry.data) == before
+    assert await _receiver_accepts(hass, hass_client, events) is True
+    client.close.assert_awaited_once()
+    assert "status 500" in caplog.text
+    assert ENDPOINT_ID not in caplog.text
+    assert SECRET not in caplog.text
+
+
+async def test_keep_receiver_keeps_registration_when_console_times_out(
+    hass: Any,
+    hass_client: Any,
+    webhook_setup: tuple[MagicMock, Any, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A timed-out delete keeps the receiver and still closes the client."""
+    entry, events = _stored_receiver(webhook_setup)
+    before = dict(entry.data)
+    client = _client()
+
+    async def hang(_endpoint_id: str) -> None:
+        await asyncio.sleep(10)
+
+    client.webhooks.delete = AsyncMock(side_effect=hang)
+    with (
+        patch.object(aw, "UniFiAccessClient", return_value=client),
+        patch.object(aw, "REMOVE_DELETE_TIMEOUT_SECONDS", 0.05),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await aw.async_remove_access_webhook(
+            hass, entry, keep_receiver_on_failure=True
+        )
+    assert result is False
+    assert dict(entry.data) == before
+    assert await _receiver_accepts(hass, hass_client, events) is True
+    client.close.assert_awaited_once()
+    assert "Timed out" in caplog.text
+
+
+async def test_keep_receiver_without_usable_client_keeps_registration(
+    hass: Any,
+    hass_client: Any,
+    webhook_setup: tuple[MagicMock, Any, Any],
+) -> None:
+    """An endpoint that cannot be reached without a token is never claimed deleted."""
+    entry, events = _stored_receiver(webhook_setup)
+    data = dict(entry.data)
+    data.pop(CONF_ACCESS_TOKEN)
+    hass.config_entries.async_update_entry(entry, data=data)
+    with patch.object(aw, "UniFiAccessClient") as factory:
+        result = await aw.async_remove_access_webhook(
+            hass, entry, keep_receiver_on_failure=True
+        )
+    assert result is False
+    factory.assert_not_called()
+    assert await _receiver_accepts(hass, hass_client, events) is True
+
+
+async def test_keep_receiver_without_endpoint_retires_receiver(
+    hass: Any,
+    hass_client: Any,
+    webhook_setup: tuple[MagicMock, Any, Any],
+) -> None:
+    """With no stored endpoint there is nothing remote to keep; the receiver goes."""
+    entry, events = _stored_receiver(webhook_setup)
+    data = {
+        key: value
+        for key, value in entry.data.items()
+        if key not in (CONF_ACCESS_WEBHOOK_ENDPOINT_ID, CONF_ACCESS_WEBHOOK_SECRET)
+    }
+    hass.config_entries.async_update_entry(entry, data=data)
+    with patch.object(aw, "UniFiAccessClient") as factory:
+        result = await aw.async_remove_access_webhook(
+            hass, entry, keep_receiver_on_failure=True
+        )
+    assert result is True
+    factory.assert_not_called()
+    assert await _receiver_accepts(hass, hass_client, events) is False
+
+
+async def test_default_removal_unregisters_even_when_delete_is_refused(
+    hass: Any,
+    hass_client: Any,
+    webhook_setup: tuple[MagicMock, Any, Any],
+) -> None:
+    """Entry removal stays best effort: the receiver goes even when delete fails."""
+    entry, events = _stored_receiver(webhook_setup)
+    client = _client()
+    client.webhooks.delete = AsyncMock(
+        side_effect=UniFiResponseError("refused", status_code=500)
+    )
+    with patch.object(aw, "UniFiAccessClient", return_value=client):
+        result = await aw.async_remove_access_webhook(hass, entry)
+    assert result is False
+    assert await _receiver_accepts(hass, hass_client, events) is False
+
+
+async def test_default_removal_unregisters_when_console_times_out(
+    hass: Any,
+    hass_client: Any,
+    webhook_setup: tuple[MagicMock, Any, Any],
+) -> None:
+    """A bounded, timed-out entry removal still unregisters the receiver."""
+    entry, events = _stored_receiver(webhook_setup)
+    client = _client()
+
+    async def hang(_endpoint_id: str) -> None:
+        await asyncio.sleep(10)
+
+    client.webhooks.delete = AsyncMock(side_effect=hang)
+    with (
+        patch.object(aw, "UniFiAccessClient", return_value=client),
+        patch.object(aw, "REMOVE_DELETE_TIMEOUT_SECONDS", 0.05),
+    ):
+        result = await aw.async_remove_access_webhook(hass, entry)
+    assert result is False
+    assert await _receiver_accepts(hass, hass_client, events) is False
+
+
+async def test_failed_keep_removal_preserves_replay_cache(
+    hass: Any,
+    hass_client: Any,
+    webhook_setup: tuple[MagicMock, Any, Any],
+) -> None:
+    """A refused move keeps replay memory: a replayed grant stays refused."""
+    entry, events = _stored_receiver(webhook_setup)
+    body = _unlock_event()
+    headers = {"Signature": _sign(body, timestamp=int(time.time()))}
+    http = await hass_client()
+    url = webhook.async_generate_path(WEBHOOK_ID)
+    first = await http.post(url, data=body, headers=headers)
+    await hass.async_block_till_done()
+    assert first.status == HTTPStatus.OK
+    assert len(events) == 1
+    client = _client()
+    client.webhooks.delete = AsyncMock(
+        side_effect=UniFiResponseError("refused", status_code=500)
+    )
+    with patch.object(aw, "UniFiAccessClient", return_value=client):
+        assert (
+            await aw.async_remove_access_webhook(
+                hass, entry, keep_receiver_on_failure=True
+            )
+            is False
+        )
+    replayed = await http.post(url, data=body, headers=headers)
+    await hass.async_block_till_done()
+    assert replayed.status == HTTPStatus.UNAUTHORIZED
+    assert len(events) == 1
