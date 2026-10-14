@@ -269,7 +269,7 @@ def _door_event(
     result: Any,
     *,
     location_type: str = "door",
-    door: str = "d",
+    door: object = "d",
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a minimal access.door.unlock event with the given result."""
@@ -309,6 +309,14 @@ def _door_event(
             _door_event("Access Denied", extra={"authentication_type": "NFC"}),
             {"door_id": "d", "result": "denied", "authentication": "NFC"},
         ),
+        (
+            _door_event("Access Granted", extra={"authentication_type": 7}),
+            {"door_id": "d", "result": "granted", "authentication": None},
+        ),
+        (
+            _door_event("Access Denied", extra={"authentication_type": ["NFC"]}),
+            {"door_id": "d", "result": "denied", "authentication": None},
+        ),
         ({"data": None}, None),
     ],
 )
@@ -317,6 +325,16 @@ def test_access_result_payload_keeps_only_permitted_fields(
 ) -> None:
     """Only a known door, its result and authentication type leave the parser."""
     assert aw.access_result_payload(body, KNOWN_DOORS) == expected
+
+
+@pytest.mark.parametrize("door", [1, None, ["d"]])
+def test_access_result_payload_rejects_non_string_location_id(door: object) -> None:
+    """A non-string location ID is refused, not coerced to a known door's text."""
+    # The text forms of these values are all listed as known doors, so only a
+    # refusal of the raw non-string value makes the payload None.
+    known_doors = frozenset({"d", "1", "None", "['d']"})
+    event = _door_event("Access Granted", door=door)
+    assert aw.access_result_payload(event, known_doors) is None
 
 
 def test_access_result_payload_drops_credential_value() -> None:
